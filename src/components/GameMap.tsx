@@ -1,9 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import styled from 'styled-components';
+import { ref, onValue, set, remove, update } from 'firebase/database';
+import { db } from '../firebase';
+import Auth from './Auth';
 import ReactNipple from 'react-nipple';
 import 'react-nipple/lib/styles.css';
-import { database } from '../firebase';
-import { ref, onValue, set, update } from 'firebase/database';
 import { Player as PlayerType, Item as ItemType } from '../types/Player';
 import { useItems } from '../hooks/useItems';
 import { useDangerZones } from '../hooks/useDangerZones';
@@ -300,7 +301,6 @@ const BoostButton = styled.button<{ isBoost: boolean }>`
 `;
 
 interface GameMapProps {
-  playerName: string;
 }
 
 const DialogOverlay = styled.div`
@@ -408,9 +408,74 @@ const DialogButton = styled.button`
   }
 `;
 
-const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
+const LogoutButton = styled.button`
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  padding: 0.8rem 1.5rem;
+  background: rgba(255, 87, 87, 0.9);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: bold;
+  z-index: 1000;
+  transition: all 0.2s;
+
+  &:hover {
+    background: rgba(255, 87, 87, 1);
+    transform: translateY(-2px);
+  }
+`;
+
+const GameMap: React.FC = () => {
   const [players, setPlayers] = useState<{ [key: string]: PlayerType }>({});
-  const playerId = useRef(Date.now().toString());
+  const [showWelcome, setShowWelcome] = useState(true);
+  const [showGameOver, setShowGameOver] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [currentPlayer, setCurrentPlayer] = useState<string | null>(null);
+  const playerId = useRef<string>('');
+
+  useEffect(() => {
+    const playersRef = ref(db, 'players');
+    const unsubscribe = onValue(playersRef, (snapshot) => {
+      const data = snapshot.val() || {};
+      setPlayers(data);
+    });
+
+    return () => {
+      unsubscribe();
+      // Remove player when component unmounts
+      if (playerId.current) {
+        const playerRef = ref(db, `players/${playerId.current}`);
+        remove(playerRef);
+      }
+    };
+  }, []);
+
+  const handleLogin = (username: string) => {
+    playerId.current = username;
+    setCurrentPlayer(username);
+    setIsAuthenticated(true);
+
+    const newPlayer: PlayerType = {
+      x: Math.random() * (MAP_WIDTH - 100) + 50,
+      y: Math.random() * (MAP_HEIGHT - 100) + 50,
+      health: 100,
+      name: username,
+      score: 0,
+      level: 1,
+      xp: 0,
+      direction: { x: 0, y: 0 },
+      color: `#${Math.floor(Math.random()*16777215).toString(16)}`,
+      speed: PLAYER_SPEED,
+    };
+
+    const playerRef = ref(db, `players/${username}`);
+    set(playerRef, newPlayer);
+    setShowWelcome(true);
+  };
+
   const [cameraPosition, setCameraPosition] = useState({ x: 0, y: 0 });
   const viewportRef = useRef<HTMLDivElement>(null);
   const { items, collectItem } = useItems();
@@ -426,23 +491,16 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
   const [isMoving, setIsMoving] = useState(false);
   const [boostLevel, setBoostLevel] = useState(BASE_BOOST_MULTIPLIER);
 
-  const [showGameOver, setShowGameOver] = useState(false);
-  const [showWelcome, setShowWelcome] = useState(true);
-
   const resetGame = () => {
     if (playerId.current && players[playerId.current]) {
-      update(ref(database, `players/${playerId.current}`), {
+      const playerRef = ref(db, `players/${playerId.current}`);
+      update(playerRef, {
         health: 100,
         x: Math.random() * (MAP_WIDTH - GRID_SIZE),
         y: Math.random() * (MAP_HEIGHT - GRID_SIZE)
       });
+      setShowGameOver(false);
     }
-    setShowGameOver(false);
-    setIsMoving(false);
-    setMoveDirection({ x: 0, y: 0 });
-    setPressedKeys(new Set());
-    setIsBoost(false);
-    setBoostLevel(BASE_BOOST_MULTIPLIER);
   };
 
   const startGame = () => {
@@ -451,10 +509,10 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
 
   useEffect(() => {
     // Initialize player
-    const playerRef = ref(database, `players/${playerId.current}`);
+    const playerRef = ref(db, `players/${playerId.current}`);
     const newPlayer: PlayerType = {
       id: playerId.current,
-      name: playerName,
+      name: 'Player',
       x: Math.floor(Math.random() * (MAP_WIDTH - 50) / GRID_SIZE) * GRID_SIZE,
       y: Math.floor(Math.random() * (MAP_HEIGHT - 50) / GRID_SIZE) * GRID_SIZE,
       color: `#${Math.floor(Math.random()*16777215).toString(16)}`,
@@ -463,12 +521,13 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
       health: 100,
       level: 1,
       xp: 0,
+      direction: { x: 0, y: 0 },
     };
-    
+
     set(playerRef, newPlayer);
 
-    // Listen for players changes
-    const playersRef = ref(database, 'players');
+    // Subscribe to players updates
+    const playersRef = ref(db, 'players');
     const unsubscribe = onValue(playersRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
@@ -481,7 +540,7 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
       set(playerRef, null);
       unsubscribe();
     };
-  }, [playerName]);
+  }, [playerId.current]);
 
   // Update camera position to follow current player
   useEffect(() => {
@@ -533,9 +592,8 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
       const zone = isInDangerZone(currentPlayer.x, currentPlayer.y);
       if (zone && currentPlayer.health > 0) {
         const newHealth = currentPlayer.health - zone.damage;
-        const playerRef = ref(database, `players/${playerId.current}`);
-        set(playerRef, {
-          ...currentPlayer,
+        const playerRef = ref(db, `players/${playerId.current}`);
+        update(playerRef, {
           health: Math.max(0, newHealth),
         });
       }
@@ -593,7 +651,8 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
         const newX = Math.max(0, Math.min(MAP_WIDTH - GRID_SIZE, currentPlayer.x + deltaX));
         const newY = Math.max(0, Math.min(MAP_HEIGHT - GRID_SIZE, currentPlayer.y + deltaY));
 
-        update(ref(database, `players/${playerId.current}`), {
+        const playerRef = ref(db, `players/${playerId.current}`);
+        update(playerRef, {
           x: newX,
           y: newY
         });
@@ -629,7 +688,8 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
         const newX = Math.max(0, Math.min(MAP_WIDTH - GRID_SIZE, currentPlayer.x + velocityX));
         const newY = Math.max(0, Math.min(MAP_HEIGHT - GRID_SIZE, currentPlayer.y + velocityY));
 
-        update(ref(database, `players/${playerId.current}`), {
+        const playerRef = ref(db, `players/${playerId.current}`);
+        update(playerRef, {
           x: newX,
           y: newY
         });
@@ -714,8 +774,23 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
     }
   };
 
+  if (!isAuthenticated) {
+    return <Auth onLogin={handleLogin} />;
+  }
+
   return (
     <>
+      {/* Add logout button */}
+      <LogoutButton onClick={() => {
+        setIsAuthenticated(false);
+        setCurrentPlayer(null);
+        if (playerId.current) {
+          const playerRef = ref(db, `players/${playerId.current}`);
+          remove(playerRef);
+        }
+      }}>Logout</LogoutButton>
+      
+      {/* Rest of the game UI */}
       {showWelcome && (
         <DialogOverlay>
           <DialogContent>
@@ -788,7 +863,7 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
               key={item.id}
               x={item.x}
               y={item.y}
-              type={item.type}
+              type={item.type as 'coin' | 'star' | 'health'}
             />
           ))}
           {Object.values(players).map((player) => (
@@ -798,7 +873,7 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
                 left: player.x,
                 top: player.y,
               }}
-              color={player.color}
+              color={player.color || '#ffffff'}
               isMoving={player.id === playerId.current ? isMoving : false}
               moveDirection={moveDirection}
               isBoost={isBoost}
@@ -812,7 +887,7 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
         </MapContainer>
         <PlayerInfo>
           <div>Level {players[playerId.current]?.level || 1}</div>
-          <XPBar progress={(players[playerId.current]?.xp % 100) || 0} />
+          <XPBar progress={(players[playerId.current]?.xp || 0) % 100} />
           <div>HP: {players[playerId.current]?.health || 100}</div>
           <HealthBar health={players[playerId.current]?.health || 100} />
           <div>Score: {players[playerId.current]?.score || 0}</div>

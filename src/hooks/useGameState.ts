@@ -67,6 +67,17 @@ export const useGameState = (playerId: string) => {
     return false;
   };
 
+  const addScore = (amount: number) => {
+    if (players[playerId]) {
+      const player = players[playerId];
+      const playerRef = ref(database, `players/${playerId}`);
+      set(playerRef, {
+        ...player,
+        score: player.score + amount,
+      });
+    }
+  };
+
   const addPlayer = (name: string) => {
     const playerRef = ref(database, `players/${playerId}`);
     const newPlayer: Player = {
@@ -80,6 +91,7 @@ export const useGameState = (playerId: string) => {
       level: 1,
       xp: 0,
       health: MAX_HEALTH,
+      direction: { x: 0, y: 0 },
     };
     
     set(playerRef, newPlayer);
@@ -95,6 +107,7 @@ export const useGameState = (playerId: string) => {
     updatePlayerPosition,
     updatePlayerHealth,
     addXP,
+    addScore,
     addPlayer,
     removePlayer,
   };

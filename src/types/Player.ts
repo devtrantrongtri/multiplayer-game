@@ -1,14 +1,18 @@
 export interface Player {
-  id: string;
+  id?: string;
   name: string;
   x: number;
   y: number;
-  color: string;
-  score: number;
-  speed: number;
   health: number;
+  color: string;
+  speed: number;
+  score: number;
   level: number;
   xp: number;
+  direction: {
+    x: number;
+    y: number;
+  };
 }
 
 export interface Item {
