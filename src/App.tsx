@@ -1,26 +1,20 @@
-import React from 'react';
-import logo from './logo.svg';
-import './App.css';
+// src/App.tsx
+import React, { useState } from 'react';
+import { LoginForm } from './components/LoginForm';
+import GameMap from './components/GameMap';
 
 function App() {
-  return (
-    <div className="App">
-      <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.tsx</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-      </header>
-    </div>
-  );
+  const [playerName, setPlayerName] = useState<string | null>(null);
+
+  const handleLogin = (name: string) => {
+    setPlayerName(name);
+  };
+
+  if (!playerName) {
+    return <LoginForm onSubmit={handleLogin} />;
+  }
+
+  return <GameMap playerName={playerName} />;
 }
 
 export default App;

@@ -1,0 +1,13 @@
+{
+  "hosting": {
+    "public": "build",
+    "site": "multiplayer-game-trantrongtri-t2004",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  }
+}
