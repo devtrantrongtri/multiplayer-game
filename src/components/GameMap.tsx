@@ -3,9 +3,8 @@ import styled from 'styled-components';
 import { ref, onValue, set, remove, update } from 'firebase/database';
 import { db } from '../firebase';
 import Auth from './Auth';
-import ReactNipple from 'react-nipple';
-import 'react-nipple/lib/styles.css';
-import { Player as PlayerType, Item as ItemType } from '../types/Player';
+import { Joystick } from 'react-joystick-component';
+import { Player as PlayerType } from '../types/Player';
 import { useItems } from '../hooks/useItems';
 import { useDangerZones } from '../hooks/useDangerZones';
 import Leaderboard from './Leaderboard';
@@ -268,6 +267,13 @@ const JoystickContainer = styled.div`
   bottom: 50px;
   left: 50px;
   z-index: 1000;
+  width: 150px;
+  height: 150px;
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 `;
 
 const MapOverlay = styled.div`
@@ -469,6 +475,9 @@ const LogoutButton = styled.button`
 `;
 
 const GameMap: React.FC = () => {
+  // Add new state for keyboard movement
+  const [keyboardMovement, setKeyboardMovement] = useState({ x: 0, y: 0 });
+  
   const [showWelcome, setShowWelcome] = useState(true);
   const [currentPlayer, setCurrentPlayer] = useState<string | null>(null);
   const [players, setPlayers] = useState<{ [key: string]: PlayerType }>({});
@@ -494,6 +503,58 @@ const GameMap: React.FC = () => {
   const [showStartDialog, setShowStartDialog] = useState(true);
   const [showEndDialog, setShowEndDialog] = useState(false);
 
+  // Define updateTrails before it's used
+  const updateTrails = (player: PlayerType) => {
+    const currentTime = Date.now();
+    if (currentTime - lastTrailTime.current > TRAIL_INTERVAL && isMoving) {
+      lastTrailTime.current = currentTime;
+      setTrails(prevTrails => [
+        ...prevTrails.slice(-10),
+        {
+          x: player.x,
+          y: player.y,
+          opacity: isBoost ? 0.4 : 0.2,
+          id: currentTime
+        }
+      ]);
+
+      setTimeout(() => {
+        setTrails(prevTrails => prevTrails.filter(t => t.id !== currentTime));
+      }, TRAIL_LIFETIME);
+    }
+  };
+
+  // Movement handler with all dependencies
+  const handleMovement = React.useCallback((deltaX: number, deltaY: number) => {
+    if (!currentPlayer || !players[currentPlayer]) return;
+
+    const player = players[currentPlayer];
+    const baseSpeed = (player.speed || PLAYER_SPEED) * (GRID_SIZE / 10);
+    const currentSpeed = baseSpeed * (isBoost ? boostLevel : 1);
+
+    const length = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+    const normalizedDelta = length > 0 ? {
+      x: (deltaX / length) * currentSpeed,
+      y: (deltaY / length) * currentSpeed
+    } : { x: 0, y: 0 };
+
+    if (normalizedDelta.x !== 0 || normalizedDelta.y !== 0) {
+      setIsMoving(true);
+      setMoveDirection(normalizedDelta);
+
+      const newX = Math.max(0, Math.min(MAP_WIDTH - GRID_SIZE, player.x + normalizedDelta.x));
+      const newY = Math.max(0, Math.min(MAP_HEIGHT - GRID_SIZE, player.y + normalizedDelta.y));
+
+      const playerRef = ref(db, `players/${currentPlayer}`);
+      update(playerRef, {
+        x: newX,
+        y: newY,
+        direction: normalizedDelta
+      });
+    }
+  }, [currentPlayer, players, isBoost, boostLevel]);
+
+  // Move all useEffect hooks to the top
   useEffect(() => {
     const playersRef = ref(db, 'players');
     const unsubscribe = onValue(playersRef, (snapshot) => {
@@ -510,115 +571,128 @@ const GameMap: React.FC = () => {
     };
   }, [currentPlayer]);
 
-  const handleNameSubmit = (name: string) => {
-    const playerId = name;
-    setCurrentPlayer(playerId);
-
-    const newPlayer: PlayerType = {
-      id: playerId,
-      name,
-      x: Math.random() * (MAP_WIDTH - 100) + 50,
-      y: Math.random() * (MAP_HEIGHT - 100) + 50,
-      health: 100,
-      color: `hsl(${Math.random() * 360}, 70%, 50%)`,
-      speed: PLAYER_SPEED,
-      score: 0,
-      level: 1,
-      xp: 0,
-      direction: { x: 0, y: 0 },
-    };
-
-    const playerRef = ref(db, `players/${playerId}`);
-    set(playerRef, newPlayer);
-    setShowWelcome(false);
-  };
-
-  // Keyboard movement
+  // Keyboard movement effect
   useEffect(() => {
-    if (!currentPlayer || !players[currentPlayer] || pressedKeys.size === 0) {
-      setIsMoving(false);
-      setMoveDirection({ x: 0, y: 0 });
-      return;
-    }
-
+    if (!currentPlayer || !players[currentPlayer]) return;
+    
     const moveInterval = setInterval(() => {
-      const player = players[currentPlayer];
-      const baseSpeed = (player.speed || PLAYER_SPEED) * (GRID_SIZE / 10);
-      const currentSpeed = baseSpeed * (isBoost ? boostLevel : 1);
-      
-      let deltaX = 0;
-      let deltaY = 0;
-
-      if (pressedKeys.has('UP')) deltaY -= 1;
-      if (pressedKeys.has('DOWN')) deltaY += 1;
-      if (pressedKeys.has('LEFT')) deltaX -= 1;
-      if (pressedKeys.has('RIGHT')) deltaX += 1;
-
-      // Normalize diagonal movement
-      if (deltaX !== 0 && deltaY !== 0) {
-        const length = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-        deltaX = deltaX / length;
-        deltaY = deltaY / length;
-      }
-
-      // Apply speed
-      deltaX *= currentSpeed;
-      deltaY *= currentSpeed;
-
-      if (deltaX !== 0 || deltaY !== 0) {
-        setIsMoving(true);
-        setMoveDirection({ x: deltaX, y: deltaY });
-
-        const newX = Math.max(0, Math.min(MAP_WIDTH - GRID_SIZE, player.x + deltaX));
-        const newY = Math.max(0, Math.min(MAP_HEIGHT - GRID_SIZE, player.y + deltaY));
-
-        const playerRef = ref(db, `players/${currentPlayer}`);
-        update(playerRef, {
-          x: newX,
-          y: newY,
-          direction: { x: deltaX, y: deltaY }
-        });
+      if (keyboardMovement.x !== 0 || keyboardMovement.y !== 0) {
+        handleMovement(keyboardMovement.x, keyboardMovement.y);
       }
     }, 16);
 
     return () => clearInterval(moveInterval);
-  }, [players, currentPlayer, pressedKeys, isBoost, boostLevel]);
+  }, [currentPlayer, players, keyboardMovement, handleMovement]);
 
-  // Keyboard controls
+  // Remove duplicate keyboard control effect and keep just one
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      setPressedKeys(prev => {
-        const newKeys = new Set(prev);
-        if (KEYS.UP.includes(e.key)) newKeys.add('UP');
-        if (KEYS.DOWN.includes(e.key)) newKeys.add('DOWN');
-        if (KEYS.LEFT.includes(e.key)) newKeys.add('LEFT');
-        if (KEYS.RIGHT.includes(e.key)) newKeys.add('RIGHT');
-        if (KEYS.BOOST.includes(e.key)) setIsBoost(true);
-        return newKeys;
-      });
+      if (!e.key) return; // Guard against undefined key
+      
+      switch(e.key.toLowerCase()) {
+        case 'w': case 'arrowup':
+          setKeyboardMovement(prev => ({ ...prev, y: -1 }));
+          break;
+        case 's': case 'arrowdown':
+          setKeyboardMovement(prev => ({ ...prev, y: 1 }));
+          break;
+        case 'a': case 'arrowleft':
+          setKeyboardMovement(prev => ({ ...prev, x: -1 }));
+          break;
+        case 'd': case 'arrowright':
+          setKeyboardMovement(prev => ({ ...prev, x: 1 }));
+          break;
+        case ' ':
+          setIsBoost(true);
+          break;
+      }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      setPressedKeys(prev => {
-        const newKeys = new Set(prev);
-        if (KEYS.UP.includes(e.key)) newKeys.delete('UP');
-        if (KEYS.DOWN.includes(e.key)) newKeys.delete('DOWN');
-        if (KEYS.LEFT.includes(e.key)) newKeys.delete('LEFT');
-        if (KEYS.RIGHT.includes(e.key)) newKeys.delete('RIGHT');
-        if (KEYS.BOOST.includes(e.key)) setIsBoost(false);
-        return newKeys;
-      });
+      if (!e.key) return; // Guard against undefined key
+      
+      switch(e.key.toLowerCase()) {
+        case 'w': case 'arrowup': case 's': case 'arrowdown':
+          setKeyboardMovement(prev => ({ ...prev, y: 0 }));
+          break;
+        case 'a': case 'arrowleft': case 'd': case 'arrowright':
+          setKeyboardMovement(prev => ({ ...prev, x: 0 }));
+          break;
+        case ' ':
+          setIsBoost(false);
+          break;
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []); // Empty dependency array since we don't use any external values
 
+  // All hooks must be at top level
+  useEffect(() => {
+    // Player data sync
+    const playersRef = ref(db, 'players');
+    const unsubscribe = onValue(playersRef, (snapshot) => {
+      const data = snapshot.val() || {};
+      setPlayers(data);
+    });
+
+    return () => {
+      unsubscribe();
+      if (currentPlayer) {
+        const playerRef = ref(db, `players/${currentPlayer}`);
+        remove(playerRef);
+      }
+    };
+  }, [currentPlayer]);
+
+  useEffect(() => {
+    // Check if valid player before processing movement
+    if (!currentPlayer || !players[currentPlayer]) return;
+    
+    // Handle keyboard movement
+    const moveInterval = setInterval(() => {
+      if (keyboardMovement.x !== 0 || keyboardMovement.y !== 0) {
+        handleMovement(keyboardMovement.x, keyboardMovement.y);
+      }
+    }, 16);
+
+    return () => clearInterval(moveInterval);
+  }, [currentPlayer, players, keyboardMovement, isBoost, boostLevel]);
+
+  // Keyboard controls - always active
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      switch(e.key.toLowerCase()) {
+        case 'w': setKeyboardMovement(prev => ({ ...prev, y: -1 })); break;
+        case 's': setKeyboardMovement(prev => ({ ...prev, y: 1 })); break;
+        case 'a': setKeyboardMovement(prev => ({ ...prev, x: -1 })); break;
+        case 'd': setKeyboardMovement(prev => ({ ...prev, x: 1 })); break;
+        case ' ': setIsBoost(true); break;
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      switch(e.key.toLowerCase()) {
+        case 'w': case 's': setKeyboardMovement(prev => ({ ...prev, y: 0 })); break;
+        case 'a': case 'd': setKeyboardMovement(prev => ({ ...prev, x: 0 })); break;
+        case ' ': setIsBoost(false); break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
   }, []);
 
+  // Sound effects
   useEffect(() => {
     if (enterGameSoundRef.current) {
       enterGameSoundRef.current.play();
@@ -643,32 +717,28 @@ const GameMap: React.FC = () => {
     }
   }, [collectedItems]);
 
-  const updateTrails = (currentPlayer: PlayerType, force: number = 1) => {
-    const currentTime = Date.now();
-    if (currentTime - lastTrailTime.current > TRAIL_INTERVAL && isMoving) {
-      lastTrailTime.current = currentTime;
-      setTrails(prevTrails => [
-        ...prevTrails.slice(-10), // Keep a maximum of 10 trails
-        {
-          x: currentPlayer.x,
-          y: currentPlayer.y,
-          opacity: isBoost ? 0.4 : 0.2,
-          id: currentTime
-        }
-      ]);
-
-      // Automatically remove trails after a certain time
-      setTimeout(() => {
-        setTrails(prevTrails => prevTrails.filter(t => t.id !== currentTime));
-      }, TRAIL_LIFETIME);
-    }
-  };
-
-  // Update trails during movement
+  // Trail and camera effects moved before conditionals
   useEffect(() => {
     if (!currentPlayer || !players[currentPlayer] || !isMoving) return;
     updateTrails(players[currentPlayer]);
   }, [players, currentPlayer, isMoving, isBoost]);
+
+  useEffect(() => {
+    if (!currentPlayer || !players[currentPlayer] || !viewportRef.current) return;
+    
+    const player = players[currentPlayer];
+    const viewport = viewportRef.current;
+    const viewportWidth = viewport.clientWidth;
+    const viewportHeight = viewport.clientHeight;
+
+    const targetX = player.x - viewportWidth / 2;
+    const targetY = player.y - viewportHeight / 2;
+
+    const newX = Math.max(0, Math.min(MAP_WIDTH - viewportWidth, targetX));
+    const newY = Math.max(0, Math.min(MAP_HEIGHT - viewportHeight, targetY));
+
+    setCameraPosition({ x: newX, y: newY });
+  }, [players, currentPlayer]);
 
   // Item collection
   useEffect(() => {
@@ -687,23 +757,28 @@ const GameMap: React.FC = () => {
     });
   }, [players, currentPlayer, items, collectItem, collectedItems]);
 
-  // Camera follow
-  useEffect(() => {
-    if (currentPlayer && players[currentPlayer] && viewportRef.current) {
-      const player = players[currentPlayer];
-      const viewport = viewportRef.current;
-      const viewportWidth = viewport.clientWidth;
-      const viewportHeight = viewport.clientHeight;
+  const handleNameSubmit = (name: string) => {
+    const playerId = name;
+    setCurrentPlayer(playerId);
 
-      const targetX = player.x - viewportWidth / 2;
-      const targetY = player.y - viewportHeight / 2;
+    const newPlayer: PlayerType = {
+      id: playerId,
+      name,
+      x: Math.random() * (MAP_WIDTH - 100) + 50,
+      y: Math.random() * (MAP_HEIGHT - 100) + 50,
+      health: 100,
+      color: `hsl(${Math.random() * 360}, 70%, 50%)`,
+      speed: PLAYER_SPEED,
+      score: 0,
+      level: 1,
+      xp: 0,
+      direction: { x: 0, y: 0 },
+    };
 
-      const newX = Math.max(0, Math.min(MAP_WIDTH - viewportWidth, targetX));
-      const newY = Math.max(0, Math.min(MAP_HEIGHT - viewportHeight, targetY));
-
-      setCameraPosition({ x: newX, y: newY });
-    }
-  }, [players, currentPlayer]);
+    const playerRef = ref(db, `players/${playerId}`);
+    set(playerRef, newPlayer);
+    setShowWelcome(false);
+  };
 
   const handleStartGame = () => {
     setShowStartDialog(false);
@@ -800,50 +875,31 @@ const GameMap: React.FC = () => {
 
       {/* Controls */}
       <JoystickContainer>
-        <ReactNipple
-          options={{
-            mode: 'static',
-            position: { top: '50%', left: '50%' },
-            color: 'white',
-            size: 150,
+        <Joystick
+          size={150}
+          baseColor="rgba(255, 255, 255, 0.5)"
+          stickColor="rgba(255, 255, 255, 0.8)"
+          move={(e) => {
+            if (e.x === null || e.y === null) return;
+            
+            const force = Math.min(1, Math.sqrt(e.x * e.x + e.y * e.y) / 50);
+            const angle = Math.atan2(e.y, e.x); // Removed the negative sign from e.y
+            
+            const joystickDelta = {
+              x: Math.cos(angle) * force,
+              y: Math.sin(angle) * force  // Removed the negative sign
+            };
+
+            handleMovement(
+              joystickDelta.x + keyboardMovement.x,
+              joystickDelta.y + keyboardMovement.y
+            );
           }}
-          style={{
-            width: 150,
-            height: 150,
-            position: 'relative',
-            background: 'rgba(0, 0, 0, 0.1)',
-            borderRadius: '50%',
-          }}
-          onMove={(evt, data) => {
-            if (!currentPlayer || !players[currentPlayer]) return;
-
-            const player = players[currentPlayer];
-            const baseSpeed = (player.speed || PLAYER_SPEED) * (GRID_SIZE / 10);
-            const currentSpeed = baseSpeed * (isBoost ? boostLevel : 1);
-            const force = Math.min(1, data.force);
-
-            const angle = data.angle.radian;
-            const deltaX = Math.cos(angle) * force * currentSpeed;
-            const deltaY = -Math.sin(angle) * force * currentSpeed;
-
-            if (deltaX !== 0 || deltaY !== 0) {
-              setIsMoving(true);
-              setMoveDirection({ x: deltaX, y: deltaY });
-
-              const newX = Math.max(0, Math.min(MAP_WIDTH - GRID_SIZE, player.x + deltaX));
-              const newY = Math.max(0, Math.min(MAP_HEIGHT - GRID_SIZE, player.y + deltaY));
-
-              const playerRef = ref(db, `players/${currentPlayer}`);
-              update(playerRef, {
-                x: newX,
-                y: newY,
-                direction: { x: deltaX, y: deltaY }
-              });
+          stop={() => {
+            if (keyboardMovement.x === 0 && keyboardMovement.y === 0) {
+              setIsMoving(false);
+              setMoveDirection({ x: 0, y: 0 });
             }
-          }}
-          onEnd={() => {
-            setIsMoving(false);
-            setMoveDirection({ x: 0, y: 0 });
           }}
         />
       </JoystickContainer>
