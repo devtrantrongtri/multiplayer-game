@@ -10,6 +10,11 @@ import { useItems } from '../hooks/useItems';
 import { useDangerZones } from '../hooks/useDangerZones';
 import Leaderboard from './Leaderboard';
 
+import enterGameSound from '../audios/enter_game.mp3';
+import deathSound from '../audios/adventures-loop-music-226836.mp3';
+import fastMoveSound from '../audios/woosh-230554.mp3';
+import collectItemSound from '../audios/power-up-type-1-230548.mp3';
+
 const GRID_SIZE = 50; // Kích thước của mỗi ô grid
 const MAP_WIDTH = 2000; // Chiều rộng map tổng
 const MAP_HEIGHT = 2000; // Chiều cao map tổng
@@ -55,6 +60,18 @@ const MapBackground = styled.div`
     linear-gradient(to bottom, #ddd 1px, transparent 1px);
   background-size: ${GRID_SIZE}px ${GRID_SIZE}px;
   opacity: 0.1;
+`;
+
+const GridOverlay = styled.div`
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  background-image: 
+    linear-gradient(to right, #ddd 1px, transparent 1px),
+    linear-gradient(to bottom, #ddd 1px, transparent 1px);
+  background-size: ${GRID_SIZE}px ${GRID_SIZE}px;
+  opacity: 0.1;
+  pointer-events: none;
 `;
 
 const MotionTrail = styled.div<{ x: number; y: number; color: string; opacity: number; scale: number }>`
@@ -318,6 +335,47 @@ const BoostButton = styled.button<{ isBoost: boolean }>`
 interface GameMapProps {
 }
 
+const Dialog = styled.div`
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0, 0, 0, 0.7);
+  color: white;
+  padding: 20px;
+  border-radius: 10px;
+  text-align: center;
+  z-index: 100;
+`;
+
+const DialogMessage = styled.p`
+  margin: 0;
+`;
+
+const DialogButton = styled.button`
+  margin-top: 10px;
+  padding: 10px 20px;
+  background: linear-gradient(to bottom, #4CAF50, #45a049);
+  color: white;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 1.1rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  transition: all 0.2s ease;
+  
+  &:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  }
+
+  &:active {
+    transform: translateY(1px);
+  }
+`;
+
 const DialogOverlay = styled.div`
   position: fixed;
   top: 0;
@@ -363,13 +421,6 @@ const DialogTitle = styled.h2`
   font-weight: bold;
 `;
 
-const DialogText = styled.div`
-  margin: 0 0 2rem;
-  color: #b8c6d1;
-  font-size: 1.2rem;
-  line-height: 1.6;
-`;
-
 const DialogStats = styled.div`
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -394,32 +445,6 @@ const StatItem = styled.div`
     font-size: 1.4rem;
     font-weight: bold;
     color: #4CAF50;
-  }
-`;
-
-const DialogButton = styled.button`
-  background: linear-gradient(to bottom, #4CAF50, #45a049);
-  color: white;
-  border: none;
-  padding: 1rem 2rem;
-  border-radius: 8px;
-  font-size: 1.2rem;
-  font-weight: bold;
-  cursor: pointer;
-  transition: all 0.2s;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
-
-  &:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(76, 175, 80, 0.4);
-    background: linear-gradient(to bottom, #45a049, #3d8b40);
-  }
-
-  &:active {
-    transform: translateY(0);
-    box-shadow: 0 2px 8px rgba(76, 175, 80, 0.2);
   }
 `;
 
@@ -454,9 +479,20 @@ const GameMap: React.FC = () => {
   const [moveDirection, setMoveDirection] = useState({ x: 0, y: 0 });
   const [boostLevel, setBoostLevel] = useState(BASE_BOOST_MULTIPLIER);
   const [collectedItems, setCollectedItems] = useState<Set<string>>(new Set());
+  const [trails, setTrails] = useState<Array<{x: number; y: number; opacity: number; id: number}>>([]);
+  const lastTrailTime = useRef(0);
+  const TRAIL_LIFETIME = 150; // Trail lifetime in milliseconds
+  const TRAIL_INTERVAL = 30; // Create a trail every 30ms
   const viewportRef = useRef<HTMLDivElement>(null);
+  const enterGameSoundRef = useRef<HTMLAudioElement | null>(null);
+  const deathSoundRef = useRef<HTMLAudioElement | null>(null);
+  const fastMoveSoundRef = useRef<HTMLAudioElement | null>(null);
+  const collectItemSoundRef = useRef<HTMLAudioElement | null>(null);
   const { items, collectItem } = useItems();
   const { zones, isInDangerZone } = useDangerZones();
+
+  const [showStartDialog, setShowStartDialog] = useState(true);
+  const [showEndDialog, setShowEndDialog] = useState(false);
 
   useEffect(() => {
     const playersRef = ref(db, 'players');
@@ -583,6 +619,57 @@ const GameMap: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    if (enterGameSoundRef.current) {
+      enterGameSoundRef.current.play();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (currentPlayer && players[currentPlayer]?.health <= 0 && deathSoundRef.current) {
+      deathSoundRef.current.play();
+    }
+  }, [players, currentPlayer]);
+
+  useEffect(() => {
+    if (isBoost && fastMoveSoundRef.current) {
+      fastMoveSoundRef.current.play();
+    }
+  }, [isBoost]);
+
+  useEffect(() => {
+    if (collectItemSoundRef.current) {
+      collectItemSoundRef.current.play();
+    }
+  }, [collectedItems]);
+
+  const updateTrails = (currentPlayer: PlayerType, force: number = 1) => {
+    const currentTime = Date.now();
+    if (currentTime - lastTrailTime.current > TRAIL_INTERVAL && isMoving) {
+      lastTrailTime.current = currentTime;
+      setTrails(prevTrails => [
+        ...prevTrails.slice(-10), // Keep a maximum of 10 trails
+        {
+          x: currentPlayer.x,
+          y: currentPlayer.y,
+          opacity: isBoost ? 0.4 : 0.2,
+          id: currentTime
+        }
+      ]);
+
+      // Automatically remove trails after a certain time
+      setTimeout(() => {
+        setTrails(prevTrails => prevTrails.filter(t => t.id !== currentTime));
+      }, TRAIL_LIFETIME);
+    }
+  };
+
+  // Update trails during movement
+  useEffect(() => {
+    if (!currentPlayer || !players[currentPlayer] || !isMoving) return;
+    updateTrails(players[currentPlayer]);
+  }, [players, currentPlayer, isMoving, isBoost]);
+
   // Item collection
   useEffect(() => {
     if (!currentPlayer || !players[currentPlayer]) return;
@@ -618,15 +705,51 @@ const GameMap: React.FC = () => {
     }
   }, [players, currentPlayer]);
 
+  const handleStartGame = () => {
+    setShowStartDialog(false);
+  };
+
+  const handleEndGame = () => {
+    // Logic to reset or end the game
+  };
+
   if (showWelcome || !currentPlayer) {
     return <Auth onLogin={handleNameSubmit} />;
   }
 
+  if (showStartDialog) {
+    return (
+      <DialogOverlay>
+        <DialogContent>
+          <DialogTitle>Welcome to the Game!</DialogTitle>
+          <DialogMessage>Get ready to start your adventure!</DialogMessage>
+          <DialogButton onClick={handleStartGame}>Start</DialogButton>
+        </DialogContent>
+      </DialogOverlay>
+    );
+  }
+
+  if (showEndDialog) {
+    return (
+      <DialogOverlay>
+        <DialogContent>
+          <DialogTitle>Game Over!</DialogTitle>
+          <DialogMessage>Better luck next time!</DialogMessage>
+          <DialogButton onClick={handleEndGame}>Restart</DialogButton>
+        </DialogContent>
+      </DialogOverlay>
+    );
+  }
+
   return (
     <ViewPort ref={viewportRef}>
+      <audio ref={enterGameSoundRef} src={enterGameSound} preload="auto" />
+      <audio ref={deathSoundRef} src={deathSound} preload="auto" />
+      <audio ref={fastMoveSoundRef} src={fastMoveSound} preload="auto" />
+      <audio ref={collectItemSoundRef} src={collectItemSound} preload="auto" />
       <MapContainer x={cameraPosition.x} y={cameraPosition.y}>
         <MapBackground />
-        
+        <GridOverlay />
         {/* Items */}
         {Object.values(items).map((item) => (
           <ItemSquare
@@ -658,6 +781,18 @@ const GameMap: React.FC = () => {
               Score: {player.score || 0}
             </PlayerScore>
           </PlayerSquare>
+        ))}
+
+        {/* Trails */}
+        {trails.map(trail => (
+          <MotionTrail
+            key={trail.id}
+            x={trail.x}
+            y={trail.y}
+            color={players[currentPlayer]?.color || '#fff'}
+            opacity={trail.opacity}
+            scale={0.8}
+          />
         ))}
 
         <Leaderboard players={players} currentPlayerId={currentPlayer} />
