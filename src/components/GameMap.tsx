@@ -6,6 +6,7 @@ import { database } from '../firebase';
 import { ref, onValue, set } from 'firebase/database';
 import { Player as PlayerType, Item as ItemType } from '../types/Player';
 import { useItems } from '../hooks/useItems';
+import { useDangerZones } from '../hooks/useDangerZones';
 import Leaderboard from './Leaderboard';
 
 const GRID_SIZE = 50; // Kích thước của mỗi ô grid
@@ -23,17 +24,25 @@ const ViewPort = styled.div`
 `;
 
 const MapContainer = styled.div<{ x: number; y: number }>`
+  position: absolute;
   width: ${MAP_WIDTH}px;
   height: ${MAP_HEIGHT}px;
-  position: absolute;
   left: ${props => -props.x}px;
   top: ${props => -props.y}px;
   background-color: #f0f0f0;
+  overflow: hidden;
+  transition: all 0.1s linear;
+`;
+
+const MapBackground = styled.div`
+  position: absolute;
+  width: 100%;
+  height: 100%;
   background-image: 
     linear-gradient(to right, #ddd 1px, transparent 1px),
     linear-gradient(to bottom, #ddd 1px, transparent 1px);
   background-size: ${GRID_SIZE}px ${GRID_SIZE}px;
-  transition: all 0.1s linear;
+  opacity: 0.1;
 `;
 
 const PlayerSquare = styled.div<{ x: number; y: number; color: string; isCurrentPlayer?: boolean }>`
@@ -54,18 +63,98 @@ const PlayerSquare = styled.div<{ x: number; y: number; color: string; isCurrent
   z-index: ${props => props.isCurrentPlayer ? 2 : 1};
 `;
 
-const ItemSquare = styled.div<{ x: number; y: number; type: 'coin' | 'star' }>`
+const ItemSquare = styled.div<{ x: number; y: number; type: 'coin' | 'star' | 'health' }>`
   position: absolute;
   width: 20px;
   height: 20px;
   left: ${props => props.x + 15}px;
   top: ${props => props.y + 15}px;
-  background-color: ${props => props.type === 'star' ? '#ffd700' : '#ffb900'};
+  background-color: ${props => {
+    switch (props.type) {
+      case 'star':
+        return '#ffd700';
+      case 'coin':
+        return '#ffb900';
+      case 'health':
+        return '#ff4081';
+      default:
+        return '#ffffff';
+    }
+  }};
   border-radius: ${props => props.type === 'star' ? '5px' : '50%'};
   transform: ${props => props.type === 'star' ? 'rotate(45deg)' : 'none'};
   transition: all 0.1s linear;
   z-index: 1;
-  box-shadow: 0 0 10px ${props => props.type === 'star' ? '#ffd700' : '#ffb900'};
+  box-shadow: 0 0 10px ${props => {
+    switch (props.type) {
+      case 'star':
+        return '#ffd700';
+      case 'coin':
+        return '#ffb900';
+      case 'health':
+        return '#ff4081';
+      default:
+        return '#ffffff';
+    }
+  }};
+`;
+
+const DangerZone = styled.div<{ x: number; y: number; width: number; height: number }>`
+  position: absolute;
+  left: ${props => props.x}px;
+  top: ${props => props.y}px;
+  width: ${props => props.width}px;
+  height: ${props => props.height}px;
+  background-color: rgba(255, 0, 0, 0.2);
+  border: 2px solid rgba(255, 0, 0, 0.5);
+  z-index: 1;
+`;
+
+const PlayerInfo = styled.div`
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  background-color: rgba(0, 0, 0, 0.8);
+  color: white;
+  padding: 15px;
+  border-radius: 8px;
+  z-index: 1000;
+`;
+
+const HealthBar = styled.div<{ health: number }>`
+  width: 100px;
+  height: 10px;
+  background-color: #333;
+  border-radius: 5px;
+  overflow: hidden;
+  margin-top: 5px;
+
+  &::after {
+    content: '';
+    display: block;
+    width: ${props => props.health}%;
+    height: 100%;
+    background-color: ${props => props.health > 50 ? '#4CAF50' : props.health > 25 ? '#FFC107' : '#F44336'};
+    transition: all 0.3s ease;
+  }
+`;
+
+const XPBar = styled.div<{ progress: number }>`
+  width: 100px;
+  height: 5px;
+  background-color: #333;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 5px;
+
+  &::after {
+    content: '';
+    display: block;
+    width: ${props => props.progress}%;
+    height: 100%;
+    background-color: #2196F3;
+    transition: all 0.3s ease;
+  }
 `;
 
 const JoystickContainer = styled.div`
@@ -96,6 +185,8 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
   const [cameraPosition, setCameraPosition] = useState({ x: 0, y: 0 });
   const viewportRef = useRef<HTMLDivElement>(null);
   const { items, collectItem } = useItems();
+  const { zones, isInDangerZone } = useDangerZones();
+  const damageInterval = useRef<NodeJS.Timeout>();
 
   useEffect(() => {
     // Initialize player
@@ -108,6 +199,9 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
       color: `#${Math.floor(Math.random()*16777215).toString(16)}`,
       speed: PLAYER_SPEED,
       score: 0,
+      health: 100,
+      level: 1,
+      xp: 0,
     };
     
     set(playerRef, newPlayer);
@@ -162,6 +256,36 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
       }
     });
   }, [players, items, collectItem]);
+
+  // Xử lý sát thương từ khu vực nguy hiểm
+  useEffect(() => {
+    const currentPlayer = players[playerId.current];
+    if (!currentPlayer) return;
+
+    // Clear previous interval
+    if (damageInterval.current) {
+      clearInterval(damageInterval.current);
+    }
+
+    // Check for danger zone damage
+    damageInterval.current = setInterval(() => {
+      const zone = isInDangerZone(currentPlayer.x, currentPlayer.y);
+      if (zone && currentPlayer.health > 0) {
+        const newHealth = currentPlayer.health - zone.damage;
+        const playerRef = ref(database, `players/${playerId.current}`);
+        set(playerRef, {
+          ...currentPlayer,
+          health: Math.max(0, newHealth),
+        });
+      }
+    }, 1000);
+
+    return () => {
+      if (damageInterval.current) {
+        clearInterval(damageInterval.current);
+      }
+    };
+  }, [players, isInDangerZone]);
 
   const handleMove = (evt: any, data: any) => {
     if (players[playerId.current] && data.direction) {
@@ -222,6 +346,16 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
   return (
     <ViewPort ref={viewportRef}>
       <MapContainer x={cameraPosition.x} y={cameraPosition.y}>
+        <MapBackground />
+        {zones.map((zone, index) => (
+          <DangerZone
+            key={index}
+            x={zone.x}
+            y={zone.y}
+            width={zone.width}
+            height={zone.height}
+          />
+        ))}
         {Object.values(items).map((item) => (
           <ItemSquare
             key={item.id}
@@ -242,6 +376,13 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
           </PlayerSquare>
         ))}
       </MapContainer>
+      <PlayerInfo>
+        <div>Level {players[playerId.current]?.level || 1}</div>
+        <XPBar progress={(players[playerId.current]?.xp % 100) || 0} />
+        <div>HP: {players[playerId.current]?.health || 100}</div>
+        <HealthBar health={players[playerId.current]?.health || 100} />
+        <div>Score: {players[playerId.current]?.score || 0}</div>
+      </PlayerInfo>
       <Leaderboard 
         players={players} 
         currentPlayerId={playerId.current} 
