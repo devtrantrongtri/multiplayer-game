@@ -129,6 +129,21 @@ const PlayerName = styled.div<{ isCurrentPlayer: boolean }>`
   z-index: 1;
 `;
 
+const PlayerScore = styled.div<{ isCurrentPlayer?: boolean }>`
+  position: absolute;
+  bottom: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: rgba(0, 0, 0, 0.6);
+  color: ${props => props.isCurrentPlayer ? '#FFD700' : '#4CAF50'};
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 10px;
+  white-space: nowrap;
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+  z-index: 2;
+`;
+
 const Trail = styled.div<{ opacity: number }>`
   position: absolute;
   width: ${GRID_SIZE}px;
@@ -429,12 +444,18 @@ const LogoutButton = styled.button`
 `;
 
 const GameMap: React.FC = () => {
-  const [players, setPlayers] = useState<{ [key: string]: PlayerType }>({});
   const [showWelcome, setShowWelcome] = useState(true);
-  const [showGameOver, setShowGameOver] = useState(false);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [currentPlayer, setCurrentPlayer] = useState<string | null>(null);
-  const playerId = useRef<string>('');
+  const [players, setPlayers] = useState<{ [key: string]: PlayerType }>({});
+  const [cameraPosition, setCameraPosition] = useState({ x: 0, y: 0 });
+  const [pressedKeys, setPressedKeys] = useState(new Set<string>());
+  const [isBoost, setIsBoost] = useState(false);
+  const [isMoving, setIsMoving] = useState(false);
+  const [moveDirection, setMoveDirection] = useState({ x: 0, y: 0 });
+  const [boostLevel, setBoostLevel] = useState(BASE_BOOST_MULTIPLIER);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const { items, collectItem } = useItems();
+  const { zones, isInDangerZone } = useDangerZones();
 
   useEffect(() => {
     const playersRef = ref(db, 'players');
@@ -445,184 +466,47 @@ const GameMap: React.FC = () => {
 
     return () => {
       unsubscribe();
-      // Remove player when component unmounts
-      if (playerId.current) {
-        const playerRef = ref(db, `players/${playerId.current}`);
+      if (currentPlayer) {
+        const playerRef = ref(db, `players/${currentPlayer}`);
         remove(playerRef);
       }
     };
-  }, []);
+  }, [currentPlayer]);
 
-  const handleLogin = (username: string) => {
-    playerId.current = username;
-    setCurrentPlayer(username);
-    setIsAuthenticated(true);
+  const handleNameSubmit = (name: string) => {
+    const playerId = name;
+    setCurrentPlayer(playerId);
 
     const newPlayer: PlayerType = {
+      id: playerId,
+      name,
       x: Math.random() * (MAP_WIDTH - 100) + 50,
       y: Math.random() * (MAP_HEIGHT - 100) + 50,
       health: 100,
-      name: username,
+      color: `hsl(${Math.random() * 360}, 70%, 50%)`,
+      speed: PLAYER_SPEED,
       score: 0,
       level: 1,
       xp: 0,
       direction: { x: 0, y: 0 },
-      color: `#${Math.floor(Math.random()*16777215).toString(16)}`,
-      speed: PLAYER_SPEED,
     };
 
-    const playerRef = ref(db, `players/${username}`);
+    const playerRef = ref(db, `players/${playerId}`);
     set(playerRef, newPlayer);
-    setShowWelcome(true);
-  };
-
-  const [cameraPosition, setCameraPosition] = useState({ x: 0, y: 0 });
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const { items, collectItem } = useItems();
-  const { zones, isInDangerZone } = useDangerZones();
-  const damageInterval = useRef<NodeJS.Timeout>();
-  const [pressedKeys, setPressedKeys] = useState(new Set());
-  const [isBoost, setIsBoost] = useState(false);
-  const [trails, setTrails] = useState<Array<{x: number; y: number; opacity: number; id: number}>>([]);
-  const lastTrailTime = useRef(0);
-  const TRAIL_LIFETIME = 150; // Giảm thởi gian tồn tại xuống 150ms
-  const TRAIL_INTERVAL = 30; // Tạo vết mờ mỗi 30ms
-  const [moveDirection, setMoveDirection] = useState({ x: 0, y: 0 });
-  const [isMoving, setIsMoving] = useState(false);
-  const [boostLevel, setBoostLevel] = useState(BASE_BOOST_MULTIPLIER);
-
-  const resetGame = () => {
-    if (playerId.current && players[playerId.current]) {
-      const playerRef = ref(db, `players/${playerId.current}`);
-      update(playerRef, {
-        health: 100,
-        x: Math.random() * (MAP_WIDTH - GRID_SIZE),
-        y: Math.random() * (MAP_HEIGHT - GRID_SIZE)
-      });
-      setShowGameOver(false);
-    }
-  };
-
-  const startGame = () => {
     setShowWelcome(false);
   };
 
-  useEffect(() => {
-    // Initialize player
-    const playerRef = ref(db, `players/${playerId.current}`);
-    const newPlayer: PlayerType = {
-      id: playerId.current,
-      name: 'Player',
-      x: Math.floor(Math.random() * (MAP_WIDTH - 50) / GRID_SIZE) * GRID_SIZE,
-      y: Math.floor(Math.random() * (MAP_HEIGHT - 50) / GRID_SIZE) * GRID_SIZE,
-      color: `#${Math.floor(Math.random()*16777215).toString(16)}`,
-      speed: PLAYER_SPEED,
-      score: 0,
-      health: 100,
-      level: 1,
-      xp: 0,
-      direction: { x: 0, y: 0 },
-    };
-
-    set(playerRef, newPlayer);
-
-    // Subscribe to players updates
-    const playersRef = ref(db, 'players');
-    const unsubscribe = onValue(playersRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        setPlayers(data);
-      }
-    });
-
-    // Cleanup
-    return () => {
-      set(playerRef, null);
-      unsubscribe();
-    };
-  }, [playerId.current]);
-
-  // Update camera position to follow current player
-  useEffect(() => {
-    if (players[playerId.current] && viewportRef.current) {
-      const player = players[playerId.current];
-      const viewport = viewportRef.current;
-      const viewportWidth = viewport.clientWidth;
-      const viewportHeight = viewport.clientHeight;
-
-      const targetX = player.x - viewportWidth / 2;
-      const targetY = player.y - viewportHeight / 2;
-
-      // Giới hạn camera trong map
-      const newX = Math.max(0, Math.min(MAP_WIDTH - viewportWidth, targetX));
-      const newY = Math.max(0, Math.min(MAP_HEIGHT - viewportHeight, targetY));
-
-      setCameraPosition({ x: newX, y: newY });
-    }
-  }, [players]);
-
-  // Check for item collection
-  useEffect(() => {
-    const currentPlayer = players[playerId.current];
-    if (!currentPlayer) return;
-
-    Object.values(items).forEach(item => {
-      const dx = currentPlayer.x - item.x;
-      const dy = currentPlayer.y - item.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-
-      if (distance < COLLECT_DISTANCE) {
-        collectItem(item.id, playerId.current, currentPlayer.score || 0);
-      }
-    });
-  }, [players, items, collectItem]);
-
-  // Xử lý sát thương từ khu vực nguy hiểm
-  useEffect(() => {
-    const currentPlayer = players[playerId.current];
-    if (!currentPlayer) return;
-
-    // Clear previous interval
-    if (damageInterval.current) {
-      clearInterval(damageInterval.current);
-    }
-
-    // Check for danger zone damage
-    damageInterval.current = setInterval(() => {
-      const zone = isInDangerZone(currentPlayer.x, currentPlayer.y);
-      if (zone && currentPlayer.health > 0) {
-        const newHealth = currentPlayer.health - zone.damage;
-        const playerRef = ref(db, `players/${playerId.current}`);
-        update(playerRef, {
-          health: Math.max(0, newHealth),
-        });
-      }
-    }, 1000);
-
-    return () => {
-      if (damageInterval.current) {
-        clearInterval(damageInterval.current);
-      }
-    };
-  }, [players, isInDangerZone]);
-
-  useEffect(() => {
-    if (players[playerId.current]?.health <= 0) {
-      setShowGameOver(true);
-    }
-  }, [players[playerId.current]?.health]);
-
   // Keyboard movement
   useEffect(() => {
-    if (!players[playerId.current] || pressedKeys.size === 0) {
+    if (!currentPlayer || !players[currentPlayer] || pressedKeys.size === 0) {
       setIsMoving(false);
       setMoveDirection({ x: 0, y: 0 });
       return;
     }
 
     const moveInterval = setInterval(() => {
-      const currentPlayer = players[playerId.current];
-      const baseSpeed = (currentPlayer.speed || PLAYER_SPEED) * (GRID_SIZE / 10);
+      const player = players[currentPlayer];
+      const baseSpeed = (player.speed || PLAYER_SPEED) * (GRID_SIZE / 10);
       const currentSpeed = baseSpeed * (isBoost ? boostLevel : 1);
       
       let deltaX = 0;
@@ -648,61 +532,20 @@ const GameMap: React.FC = () => {
         setIsMoving(true);
         setMoveDirection({ x: deltaX, y: deltaY });
 
-        const newX = Math.max(0, Math.min(MAP_WIDTH - GRID_SIZE, currentPlayer.x + deltaX));
-        const newY = Math.max(0, Math.min(MAP_HEIGHT - GRID_SIZE, currentPlayer.y + deltaY));
+        const newX = Math.max(0, Math.min(MAP_WIDTH - GRID_SIZE, player.x + deltaX));
+        const newY = Math.max(0, Math.min(MAP_HEIGHT - GRID_SIZE, player.y + deltaY));
 
-        const playerRef = ref(db, `players/${playerId.current}`);
+        const playerRef = ref(db, `players/${currentPlayer}`);
         update(playerRef, {
           x: newX,
-          y: newY
+          y: newY,
+          direction: { x: deltaX, y: deltaY }
         });
-
-        updateTrails(currentPlayer);
       }
     }, 16);
 
     return () => clearInterval(moveInterval);
-  }, [players, pressedKeys, isBoost, boostLevel]);
-
-  // Joystick movement
-  const handleMove = (evt: any, data: any) => {
-    if (players[playerId.current] && data.direction) {
-      const currentPlayer = players[playerId.current];
-      const baseSpeed = (currentPlayer.speed || PLAYER_SPEED) * (GRID_SIZE / 10);
-      const currentSpeed = baseSpeed * (isBoost ? boostLevel : 1);
-      const force = Math.min(1, data.force);
-
-      // Convert angle to radians and calculate direction
-      const angle = data.angle.radian;
-      const deltaX = Math.cos(angle);
-      const deltaY = -Math.sin(angle); // Đảo ngược dấu để di chuyển đúng hướng
-
-      // Apply speed and force
-      const velocityX = deltaX * currentSpeed * force;
-      const velocityY = deltaY * currentSpeed * force;
-
-      if (velocityX !== 0 || velocityY !== 0) {
-        setIsMoving(true);
-        setMoveDirection({ x: velocityX, y: velocityY });
-
-        const newX = Math.max(0, Math.min(MAP_WIDTH - GRID_SIZE, currentPlayer.x + velocityX));
-        const newY = Math.max(0, Math.min(MAP_HEIGHT - GRID_SIZE, currentPlayer.y + velocityY));
-
-        const playerRef = ref(db, `players/${playerId.current}`);
-        update(playerRef, {
-          x: newX,
-          y: newY
-        });
-
-        updateTrails(currentPlayer, force);
-      }
-    }
-  };
-
-  const handleEnd = () => {
-    setIsMoving(false);
-    setMoveDirection({ x: 0, y: 0 });
-  };
+  }, [players, currentPlayer, pressedKeys, isBoost, boostLevel]);
 
   // Keyboard controls
   useEffect(() => {
@@ -739,197 +582,164 @@ const GameMap: React.FC = () => {
     };
   }, []);
 
-  // Update boost effect
+  // Item collection
   useEffect(() => {
-    if (!isBoost) {
-      setBoostLevel(BASE_BOOST_MULTIPLIER);
-      return;
+    if (!currentPlayer || !players[currentPlayer]) return;
+
+    const player = players[currentPlayer];
+    Object.values(items).forEach(item => {
+      const dx = player.x - item.x;
+      const dy = player.y - item.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+
+      if (distance < COLLECT_DISTANCE) {
+        collectItem(item.id, currentPlayer, player.score || 0);
+        
+        // Update player score
+        const playerRef = ref(db, `players/${currentPlayer}`);
+        const newScore = (player.score || 0) + 10;
+        const newXP = (player.xp || 0) + 5;
+        const newLevel = Math.floor(newXP / 100) + 1;
+        
+        update(playerRef, {
+          score: newScore,
+          xp: newXP,
+          level: newLevel
+        });
+      }
+    });
+  }, [players, currentPlayer, items, collectItem]);
+
+  // Camera follow
+  useEffect(() => {
+    if (currentPlayer && players[currentPlayer] && viewportRef.current) {
+      const player = players[currentPlayer];
+      const viewport = viewportRef.current;
+      const viewportWidth = viewport.clientWidth;
+      const viewportHeight = viewport.clientHeight;
+
+      const targetX = player.x - viewportWidth / 2;
+      const targetY = player.y - viewportHeight / 2;
+
+      const newX = Math.max(0, Math.min(MAP_WIDTH - viewportWidth, targetX));
+      const newY = Math.max(0, Math.min(MAP_HEIGHT - viewportHeight, targetY));
+
+      setCameraPosition({ x: newX, y: newY });
     }
+  }, [players, currentPlayer]);
 
-    const boostInterval = setInterval(() => {
-      setBoostLevel(prev => Math.min(prev + BOOST_INCREMENT, MAX_BOOST_MULTIPLIER));
-    }, 1000);
-
-    return () => clearInterval(boostInterval);
-  }, [isBoost]);
-
-  const updateTrails = (currentPlayer: PlayerType, force: number = 1) => {
-    const currentTime = Date.now();
-    if (currentTime - lastTrailTime.current > TRAIL_INTERVAL && (isMoving || force > 0)) {
-      lastTrailTime.current = currentTime;
-      setTrails(prevTrails => [
-        ...prevTrails.slice(-10), // Giữ tối đa 10 vết mờ
-        {
-          x: currentPlayer.x,
-          y: currentPlayer.y,
-          opacity: isBoost ? 0.4 : 0.2,
-          id: currentTime
-        }
-      ]);
-
-      // Tự động xóa vết mờ sau một khoảng thởi gian
-      setTimeout(() => {
-        setTrails(prevTrails => prevTrails.filter(t => t.id !== currentTime));
-      }, TRAIL_LIFETIME);
-    }
-  };
-
-  if (!isAuthenticated) {
-    return <Auth onLogin={handleLogin} />;
+  if (showWelcome || !currentPlayer) {
+    return <Auth onLogin={handleNameSubmit} />;
   }
 
   return (
-    <>
-      {/* Add logout button */}
-      <LogoutButton onClick={() => {
-        setIsAuthenticated(false);
-        setCurrentPlayer(null);
-        if (playerId.current) {
-          const playerRef = ref(db, `players/${playerId.current}`);
-          remove(playerRef);
-        }
-      }}>Logout</LogoutButton>
-      
-      {/* Rest of the game UI */}
-      {showWelcome && (
-        <DialogOverlay>
-          <DialogContent>
-            <DialogTitle>Welcome to Grid Battle!</DialogTitle>
-            <DialogText>
-              <p>🎮 Controls:</p>
-              <ul style={{ textAlign: 'left', marginBottom: '1rem' }}>
-                <li>WASD or Arrow keys to move</li>
-                <li>Hold Space to boost speed</li>
-                <li>Use joystick on mobile devices</li>
-              </ul>
-              <p>🎯 Objectives:</p>
-              <ul style={{ textAlign: 'left' }}>
-                <li>Avoid red danger zones</li>
-                <li>Collect power-ups to level up</li>
-                <li>Compete with other players</li>
-              </ul>
-            </DialogText>
-            <DialogButton onClick={startGame}>Start Game</DialogButton>
-          </DialogContent>
-        </DialogOverlay>
-      )}
-
-      {showGameOver && (
-        <DialogOverlay>
-          <DialogContent>
-            <DialogTitle>Game Over!</DialogTitle>
-            <DialogText>
-              <p>You've been eliminated!</p>
-            </DialogText>
-            <DialogStats>
-              <StatItem>
-                <div className="label">Final Score</div>
-                <div className="value">{players[playerId.current]?.score || 0}</div>
-              </StatItem>
-              <StatItem>
-                <div className="label">Level Reached</div>
-                <div className="value">{players[playerId.current]?.level || 1}</div>
-              </StatItem>
-            </DialogStats>
-            <DialogButton onClick={resetGame}>Play Again</DialogButton>
-          </DialogContent>
-        </DialogOverlay>
-      )}
-
-      <ViewPort ref={viewportRef}>
-        <MapContainer x={cameraPosition.x} y={cameraPosition.y}>
-          {/* Render trails */}
-          {trails.map(trail => (
-            <MotionTrail
-              key={trail.id}
-              x={trail.x}
-              y={trail.y}
-              color={players[playerId.current]?.color || '#fff'}
-              opacity={trail.opacity}
-              scale={0.8}
-            />
-          ))}
-          {zones.map((zone, index) => (
-            <DangerZone
-              key={index}
-              x={zone.x}
-              y={zone.y}
-              width={zone.width}
-              height={zone.height}
-            />
-          ))}
-          {Object.values(items).map((item) => (
-            <ItemSquare
-              key={item.id}
-              x={item.x}
-              y={item.y}
-              type={item.type as 'coin' | 'star' | 'health'}
-            />
-          ))}
-          {Object.values(players).map((player) => (
-            <PlayerSquare
-              key={player.id}
-              style={{
-                left: player.x,
-                top: player.y,
-              }}
-              color={player.color || '#ffffff'}
-              isMoving={player.id === playerId.current ? isMoving : false}
-              moveDirection={moveDirection}
-              isBoost={isBoost}
-              isCurrentPlayer={player.id === playerId.current}
-            >
-              <PlayerName isCurrentPlayer={player.id === playerId.current}>
-                {player.name || 'Player'}
-              </PlayerName>
-            </PlayerSquare>
-          ))}
-        </MapContainer>
-        <PlayerInfo>
-          <div>Level {players[playerId.current]?.level || 1}</div>
-          <XPBar progress={(players[playerId.current]?.xp || 0) % 100} />
-          <div>HP: {players[playerId.current]?.health || 100}</div>
-          <HealthBar health={players[playerId.current]?.health || 100} />
-          <div>Score: {players[playerId.current]?.score || 0}</div>
-        </PlayerInfo>
-        <Leaderboard 
-          players={players} 
-          currentPlayerId={playerId.current} 
-        />
-        <JoystickContainer>
-          <ReactNipple
-            options={{
-              mode: 'static',
-              position: { top: '50%', left: '50%' },
-              color: 'white',
-              size: 150,
-              lockX: false,
-              lockY: false,
-            }}
-            style={{
-              width: 150,
-              height: 150,
-              position: 'relative',
-              background: 'rgba(0, 0, 0, 0.1)',
-              borderRadius: '50%',
-              border: '1px solid #cccccc'
-            }}
-            onMove={handleMove}
-            onEnd={handleEnd}
+    <ViewPort ref={viewportRef}>
+      <MapContainer x={cameraPosition.x} y={cameraPosition.y}>
+        <MapBackground />
+        
+        {/* Items */}
+        {Object.values(items).map((item) => (
+          <ItemSquare
+            key={item.id}
+            x={item.x}
+            y={item.y}
+            type={item.type}
           />
-        </JoystickContainer>
-        <BoostButton 
-          isBoost={isBoost}
-          onTouchStart={() => setIsBoost(true)}
-          onTouchEnd={() => setIsBoost(false)}
-          onMouseDown={() => setIsBoost(true)}
-          onMouseUp={() => setIsBoost(false)}
-          onMouseLeave={() => setIsBoost(false)}
-        >
-          BOOST
-        </BoostButton>
-      </ViewPort>
-    </>
+        ))}
+
+        {/* Players */}
+        {Object.entries(players).map(([id, player]) => (
+          <PlayerSquare
+            key={id}
+            style={{
+              left: player.x,
+              top: player.y,
+            }}
+            color={player.color || '#ffffff'}
+            isMoving={id === currentPlayer ? isMoving : false}
+            moveDirection={id === currentPlayer ? moveDirection : player.direction}
+            isBoost={id === currentPlayer ? isBoost : false}
+            isCurrentPlayer={id === currentPlayer}
+          >
+            <PlayerName isCurrentPlayer={id === currentPlayer}>
+              {player.name}
+            </PlayerName>
+            <PlayerScore isCurrentPlayer={id === currentPlayer}>
+              Score: {player.score || 0}
+            </PlayerScore>
+          </PlayerSquare>
+        ))}
+
+        <Leaderboard players={players} currentPlayerId={currentPlayer} />
+      </MapContainer>
+
+      {/* Controls */}
+      <JoystickContainer>
+        <ReactNipple
+          options={{
+            mode: 'static',
+            position: { top: '50%', left: '50%' },
+            color: 'white',
+            size: 150,
+          }}
+          style={{
+            width: 150,
+            height: 150,
+            position: 'relative',
+            background: 'rgba(0, 0, 0, 0.1)',
+            borderRadius: '50%',
+          }}
+          onMove={(evt, data) => {
+            if (!currentPlayer || !players[currentPlayer]) return;
+
+            const player = players[currentPlayer];
+            const baseSpeed = (player.speed || PLAYER_SPEED) * (GRID_SIZE / 10);
+            const currentSpeed = baseSpeed * (isBoost ? boostLevel : 1);
+            const force = Math.min(1, data.force);
+
+            const angle = data.angle.radian;
+            const deltaX = Math.cos(angle) * force * currentSpeed;
+            const deltaY = -Math.sin(angle) * force * currentSpeed;
+
+            if (deltaX !== 0 || deltaY !== 0) {
+              setIsMoving(true);
+              setMoveDirection({ x: deltaX, y: deltaY });
+
+              const newX = Math.max(0, Math.min(MAP_WIDTH - GRID_SIZE, player.x + deltaX));
+              const newY = Math.max(0, Math.min(MAP_HEIGHT - GRID_SIZE, player.y + deltaY));
+
+              const playerRef = ref(db, `players/${currentPlayer}`);
+              update(playerRef, {
+                x: newX,
+                y: newY,
+                direction: { x: deltaX, y: deltaY }
+              });
+            }
+          }}
+          onEnd={() => {
+            setIsMoving(false);
+            setMoveDirection({ x: 0, y: 0 });
+          }}
+        />
+      </JoystickContainer>
+
+      <BoostButton
+        isBoost={isBoost}
+        onTouchStart={() => setIsBoost(true)}
+        onTouchEnd={() => setIsBoost(false)}
+        onMouseDown={() => setIsBoost(true)}
+        onMouseUp={() => setIsBoost(false)}
+      >
+        BOOST
+      </BoostButton>
+
+      {/* Player Stats */}
+      <PlayerInfo>
+        <div>Level {players[currentPlayer]?.level || 1}</div>
+        <div>Score: {players[currentPlayer]?.score || 0}</div>
+        <XPBar progress={(players[currentPlayer]?.xp || 0) % 100} />
+      </PlayerInfo>
+    </ViewPort>
   );
 };
 
