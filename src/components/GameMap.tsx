@@ -3,7 +3,7 @@ import styled from 'styled-components';
 import ReactNipple from 'react-nipple';
 import 'react-nipple/lib/styles.css';
 import { database } from '../firebase';
-import { ref, onValue, set } from 'firebase/database';
+import { ref, onValue, set, update } from 'firebase/database';
 import { Player as PlayerType, Item as ItemType } from '../types/Player';
 import { useItems } from '../hooks/useItems';
 import { useDangerZones } from '../hooks/useDangerZones';
@@ -290,9 +290,11 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
   const [pressedKeys, setPressedKeys] = useState(new Set());
   const [isBoost, setIsBoost] = useState(false);
   const [trails, setTrails] = useState<Array<{x: number; y: number; opacity: number; id: number}>>([]);
+  const lastTrailTime = useRef(0);
+  const TRAIL_LIFETIME = 150; // Giảm thởi gian tồn tại xuống 150ms
+  const TRAIL_INTERVAL = 30; // Tạo vết mờ mỗi 30ms
   const [moveDirection, setMoveDirection] = useState({ x: 0, y: 0 });
   const [isMoving, setIsMoving] = useState(false);
-  const lastTrailTime = useRef(0);
   const [boostLevel, setBoostLevel] = useState(BASE_BOOST_MULTIPLIER);
 
   useEffect(() => {
@@ -394,6 +396,68 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
     };
   }, [players, isInDangerZone]);
 
+  // Keyboard movement
+  useEffect(() => {
+    if (!players[playerId.current] || pressedKeys.size === 0) {
+      setIsMoving(false);
+      setMoveDirection({ x: 0, y: 0 });
+      return;
+    }
+
+    const moveInterval = setInterval(() => {
+      const currentPlayer = players[playerId.current];
+      const speed = (currentPlayer.speed || PLAYER_SPEED) * (GRID_SIZE / 10) * (isBoost ? boostLevel : 1);
+      let deltaX = 0;
+      let deltaY = 0;
+
+      if (pressedKeys.has('UP')) deltaY -= 1;
+      if (pressedKeys.has('DOWN')) deltaY += 1;
+      if (pressedKeys.has('LEFT')) deltaX -= 1;
+      if (pressedKeys.has('RIGHT')) deltaX += 1;
+
+      // Normalize diagonal movement
+      if (deltaX !== 0 && deltaY !== 0) {
+        const length = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+        deltaX = deltaX / length;
+        deltaY = deltaY / length;
+      }
+
+      // Apply speed after normalization
+      deltaX *= speed;
+      deltaY *= speed;
+
+      if (deltaX !== 0 || deltaY !== 0) {
+        setIsMoving(true);
+        setMoveDirection({ x: deltaX, y: deltaY });
+
+        const newX = Math.max(0, Math.min(MAP_WIDTH - GRID_SIZE, currentPlayer.x + deltaX));
+        const newY = Math.max(0, Math.min(MAP_HEIGHT - GRID_SIZE, currentPlayer.y + deltaY));
+
+        update(ref(database, `players/${playerId.current}`), {
+          x: newX,
+          y: newY
+        });
+
+        // Update trails
+        const currentTime = Date.now();
+        if (currentTime - lastTrailTime.current > TRAIL_INTERVAL) {
+          lastTrailTime.current = currentTime;
+          setTrails(prevTrails => [
+            ...prevTrails,
+            {
+              x: currentPlayer.x,
+              y: currentPlayer.y,
+              opacity: isBoost ? 0.4 : 0.2,
+              id: currentTime
+            }
+          ]);
+        }
+      }
+    }, 16);
+
+    return () => clearInterval(moveInterval);
+  }, [players, pressedKeys, isBoost, boostLevel]);
+
   // Keyboard controls
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -443,146 +507,103 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
     return () => clearInterval(boostInterval);
   }, [isBoost]);
 
-  // Keyboard movement
+  // Cleanup trails
   useEffect(() => {
-    if (!players[playerId.current] || pressedKeys.size === 0) {
-      setIsMoving(false);
-      setMoveDirection({ x: 0, y: 0 });
-      return;
-    }
+    const cleanupInterval = setInterval(() => {
+      const now = Date.now();
+      setTrails(prevTrails => 
+        prevTrails
+          .filter(trail => now - trail.id < TRAIL_LIFETIME)
+          .map(trail => ({
+            ...trail,
+            opacity: Math.max(0.1, 0.3 * (1 - (now - trail.id) / TRAIL_LIFETIME))
+          }))
+      );
+    }, 16);
 
-    const moveInterval = setInterval(() => {
-      const currentPlayer = players[playerId.current];
-      const speed = (currentPlayer.speed || PLAYER_SPEED) * (GRID_SIZE / 10) * (isBoost ? boostLevel : 1);
-      let deltaX = 0;
-      let deltaY = 0;
-
-      if (pressedKeys.has('UP')) deltaY -= speed;
-      if (pressedKeys.has('DOWN')) deltaY += speed;
-      if (pressedKeys.has('LEFT')) deltaX -= speed;
-      if (pressedKeys.has('RIGHT')) deltaX += speed;
-
-      if (deltaX !== 0 || deltaY !== 0) {
-        setIsMoving(true);
-        setMoveDirection({ x: deltaX, y: deltaY });
-        if (isBoost) {
-          const now = Date.now();
-          if (now - lastTrailTime.current < 50) return; // Limit trail frequency
-          lastTrailTime.current = now;
-
-          const newTrail = {
-            x: currentPlayer.x,
-            y: currentPlayer.y,
-            opacity: 0.3,
-            id: now,
-          };
-
-          setTrails(prev => [...prev, newTrail]);
-          setTimeout(() => {
-            setTrails(prev => prev.filter(trail => trail.id !== newTrail.id));
-          }, 300);
-        }
-      } else {
-        setIsMoving(false);
-        setMoveDirection({ x: 0, y: 0 });
-      }
-
-      // Normalize diagonal movement
-      if (deltaX !== 0 && deltaY !== 0) {
-        deltaX *= 0.707;
-        deltaY *= 0.707;
-      }
-
-      // Giới hạn tốc độ tối đa
-      const maxSpeed = (GRID_SIZE / 6) * (isBoost ? 1.5 : 1);
-      const currentSpeed = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-      if (currentSpeed > maxSpeed) {
-        const scale = maxSpeed / currentSpeed;
-        deltaX *= scale;
-        deltaY *= scale;
-      }
-
-      // Giới hạn trong map
-      const newX = Math.max(0, Math.min(MAP_WIDTH - 30, currentPlayer.x + deltaX));
-      const newY = Math.max(0, Math.min(MAP_HEIGHT - 30, currentPlayer.y + deltaY));
-
-      if (newX !== currentPlayer.x || newY !== currentPlayer.y) {
-        const playerRef = ref(database, `players/${playerId.current}`);
-        set(playerRef, {
-          ...currentPlayer,
-          x: newX,
-          y: newY,
-        });
-      }
-    }, 16); // 60fps
-
-    return () => clearInterval(moveInterval);
-  }, [players, pressedKeys, isBoost, boostLevel]);
+    return () => clearInterval(cleanupInterval);
+  }, []);
 
   const handleMove = (evt: any, data: any) => {
     if (players[playerId.current] && data.direction) {
       const currentPlayer = players[playerId.current];
       const speed = (currentPlayer.speed || PLAYER_SPEED) * (GRID_SIZE / 10) * (isBoost ? boostLevel : 1);
+
+      // Lấy hướng từ joystick và tính toán vector di chuyển
+      const angle = data.direction.angle;
       let deltaX = 0;
       let deltaY = 0;
 
-      // Di chuyển theo hướng của joystick
-      switch (data.direction.angle) {
+      // Chuyển đổi góc thành vector di chuyển
+      switch (angle) {
         case 'up':
-          deltaY = -speed;
+          deltaY = -1;
           break;
         case 'down':
-          deltaY = speed;
+          deltaY = 1;
           break;
         case 'left':
-          deltaX = -speed;
+          deltaX = -1;
           break;
         case 'right':
-          deltaX = speed;
+          deltaX = 1;
           break;
         case 'up:left':
-          deltaX = -speed * 0.707;
-          deltaY = -speed * 0.707;
+          deltaX = -0.707;
+          deltaY = -0.707;
           break;
         case 'up:right':
-          deltaX = speed * 0.707;
-          deltaY = -speed * 0.707;
+          deltaX = 0.707;
+          deltaY = -0.707;
           break;
         case 'down:left':
-          deltaX = -speed * 0.707;
-          deltaY = speed * 0.707;
+          deltaX = -0.707;
+          deltaY = 0.707;
           break;
         case 'down:right':
-          deltaX = speed * 0.707;
-          deltaY = speed * 0.707;
+          deltaX = 0.707;
+          deltaY = 0.707;
           break;
       }
 
-      // Áp dụng lực từ joystick với giới hạn
-      const force = Math.min(data.force, 0.9); 
-      deltaX *= force;
-      deltaY *= force;
+      // Áp dụng force và speed
+      const force = Math.min(data.force || 0, 1);
+      deltaX *= force * speed;
+      deltaY *= force * speed;
 
-      // Giới hạn tốc độ tối đa
-      const maxSpeed = GRID_SIZE / 6; 
-      const currentSpeed = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-      if (currentSpeed > maxSpeed) {
-        const scale = maxSpeed / currentSpeed;
-        deltaX *= scale;
-        deltaY *= scale;
+      if (deltaX !== 0 || deltaY !== 0) {
+        setIsMoving(true);
+        setMoveDirection({ x: deltaX, y: deltaY });
+
+        const newX = Math.max(0, Math.min(MAP_WIDTH - GRID_SIZE, currentPlayer.x + deltaX));
+        const newY = Math.max(0, Math.min(MAP_HEIGHT - GRID_SIZE, currentPlayer.y + deltaY));
+
+        update(ref(database, `players/${playerId.current}`), {
+          x: newX,
+          y: newY
+        });
+
+        // Update trails
+        const currentTime = Date.now();
+        if (currentTime - lastTrailTime.current > TRAIL_INTERVAL) {
+          lastTrailTime.current = currentTime;
+          setTrails(prevTrails => [
+            ...prevTrails,
+            {
+              x: currentPlayer.x,
+              y: currentPlayer.y,
+              opacity: isBoost ? 0.4 : 0.2,
+              id: currentTime
+            }
+          ]);
+        }
       }
-
-      // Giới hạn trong map
-      const newX = Math.max(0, Math.min(MAP_WIDTH - 30, currentPlayer.x + deltaX));
-      const newY = Math.max(0, Math.min(MAP_HEIGHT - 30, currentPlayer.y + deltaY));
-
-      const playerRef = ref(database, `players/${playerId.current}`);
-      set(playerRef, {
-        ...currentPlayer,
-        x: newX,
-        y: newY,
-      });
     }
+  };
+
+  const handleEnd = () => {
+    setIsMoving(false);
+    setMoveDirection({ x: 0, y: 0 });
   };
 
   return (
@@ -651,22 +672,24 @@ const GameMap: React.FC<GameMapProps> = ({ playerName }) => {
       </MapOverlay> */}
       <JoystickContainer>
         <ReactNipple
-          options={{ 
-            mode: 'static', 
+          options={{
+            mode: 'static',
             position: { top: '50%', left: '50%' },
-            color: '#000000',
-            size: 100,
+            color: 'white',
+            size: 150,
             lockX: false,
             lockY: false,
           }}
           style={{
             width: 150,
             height: 150,
-            backgroundColor: '#ffffff',
+            position: 'relative',
+            background: 'rgba(0, 0, 0, 0.1)',
             borderRadius: '50%',
             border: '1px solid #cccccc'
           }}
           onMove={handleMove}
+          onEnd={handleEnd}
         />
       </JoystickContainer>
       <BoostButton 
