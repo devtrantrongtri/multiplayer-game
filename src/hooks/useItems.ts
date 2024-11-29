@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ref, onValue, set, remove } from 'firebase/database';
+import { ref, onValue, set, remove, get, update } from 'firebase/database';
 import { database } from '../firebase';
 import { Item } from '../types/Player';
 
@@ -61,44 +61,48 @@ export const useItems = () => {
     return () => clearInterval(interval);
   }, [items]);
 
-  const collectItem = (itemId: string, playerId: string, currentScore: number) => {
+  const collectItem = async (itemId: string, playerId: string, currentScore: number) => {
     const item = items[itemId];
     if (!item) return;
 
     const itemType = Object.values(ITEM_TYPES).find(t => t.type === item.type);
     if (!itemType) return;
 
-    // Update player score and health
-    const playerRef = ref(database, `players/${playerId}`);
-    const updates: any = {
-      score: currentScore + itemType.value,
-    };
+    try {
+      // First, remove the item to prevent double collection
+      const itemRef = ref(database, `items/${itemId}`);
+      await remove(itemRef);
 
-    // Get current player data for health update
-    const playerDataRef = ref(database, `players/${playerId}`);
-    onValue(playerDataRef, (snapshot) => {
-      const playerData = snapshot.val();
-      if (playerData && itemType.health > 0) {
-        updates.health = Math.min(100, playerData.health + itemType.health);
-      }
-      if (playerData && itemType.xp > 0) {
-        const newXP = playerData.xp + itemType.xp;
-        const newLevel = Math.floor(newXP / 100) + 1;
-        const levelUp = newLevel > playerData.level;
+      // Then update player stats
+      const playerRef = ref(database, `players/${playerId}`);
+      const playerSnapshot = await get(playerRef);
+      const playerData = playerSnapshot.val();
+      
+      if (!playerData) return;
 
-        updates.xp = newXP;
+      const updates: {
+        score: number;
+        health: number;
+        xp: number;
+        level?: number;
+        speed?: number;
+      } = {
+        score: currentScore + itemType.value,
+        health: itemType.health > 0 ? Math.min(100, playerData.health + itemType.health) : playerData.health,
+        xp: playerData.xp + itemType.xp,
+      };
+
+      const newLevel = Math.floor(updates.xp / 100) + 1;
+      if (newLevel > playerData.level) {
         updates.level = newLevel;
-        if (levelUp) {
-          updates.speed = playerData.speed * 1.1;
-          updates.health = 100;
-        }
+        updates.speed = playerData.speed * 1.1;
+        updates.health = 100;
       }
-      set(playerRef, { ...playerData, ...updates });
-    }, { onlyOnce: true });
 
-    // Remove collected item
-    const itemRef = ref(database, `items/${itemId}`);
-    remove(itemRef);
+      await update(playerRef, updates);
+    } catch (error) {
+      console.error('Error collecting item:', error);
+    }
   };
 
   return {

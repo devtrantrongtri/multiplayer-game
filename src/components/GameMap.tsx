@@ -453,6 +453,7 @@ const GameMap: React.FC = () => {
   const [isMoving, setIsMoving] = useState(false);
   const [moveDirection, setMoveDirection] = useState({ x: 0, y: 0 });
   const [boostLevel, setBoostLevel] = useState(BASE_BOOST_MULTIPLIER);
+  const [collectedItems, setCollectedItems] = useState<Set<string>>(new Set());
   const viewportRef = useRef<HTMLDivElement>(null);
   const { items, collectItem } = useItems();
   const { zones, isInDangerZone } = useDangerZones();
@@ -592,23 +593,12 @@ const GameMap: React.FC = () => {
       const dy = player.y - item.y;
       const distance = Math.sqrt(dx * dx + dy * dy);
 
-      if (distance < COLLECT_DISTANCE) {
+      if (distance < COLLECT_DISTANCE && !collectedItems.has(item.id)) {
+        setCollectedItems(prev => new Set(prev).add(item.id));
         collectItem(item.id, currentPlayer, player.score || 0);
-        
-        // Update player score
-        const playerRef = ref(db, `players/${currentPlayer}`);
-        const newScore = (player.score || 0) + 10;
-        const newXP = (player.xp || 0) + 5;
-        const newLevel = Math.floor(newXP / 100) + 1;
-        
-        update(playerRef, {
-          score: newScore,
-          xp: newXP,
-          level: newLevel
-        });
       }
     });
-  }, [players, currentPlayer, items, collectItem]);
+  }, [players, currentPlayer, items, collectItem, collectedItems]);
 
   // Camera follow
   useEffect(() => {
