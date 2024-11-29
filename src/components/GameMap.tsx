@@ -15,7 +15,7 @@ import deathSound from '../audios/adventures-loop-music-226836.mp3';
 import fastMoveSound from '../audios/woosh-230554.mp3';
 import collectItemSound from '../audios/power-up-type-1-230548.mp3';
 
-const GRID_SIZE = 50; // Kích thước của mỗi ô grid
+const GRID_SIZE = 40; // Smaller grid size for mobile
 const MAP_WIDTH = 2000; // Chiều rộng map tổng
 const MAP_HEIGHT = 2000; // Chiều cao map tổng
 const PLAYER_SPEED = 2; // Giảm tốc độ xuống 1
@@ -23,6 +23,8 @@ const COLLECT_DISTANCE = 30; // Khoảng cách để thu thập vật phẩm
 const BASE_BOOST_MULTIPLIER = 4; // Tốc độ tăng tốc mặc định (2x)
 const MAX_BOOST_MULTIPLIER = 6; // Tốc độ tăng tốc tối đa (3.5x)
 const BOOST_INCREMENT = 0.3; // Tốc độ tăng mỗi giây (30%)
+const BULLET_COST = 3;
+const JOYSTICK_SIZE = 100;
 
 const KEYS = {
   UP: ['ArrowUp', 'w', 'W'],
@@ -30,6 +32,39 @@ const KEYS = {
   LEFT: ['ArrowLeft', 'a', 'A'],
   RIGHT: ['ArrowRight', 'd', 'D'],
   BOOST: [' '] // Space key
+};
+
+interface Bullet {
+  id: string;
+  x: number;
+  y: number;
+  direction: { x: number; y: number };
+  playerId: string;
+}
+
+const BULLET_SPEED = 8; // Faster bullets
+const BULLET_DAMAGE = 10;
+const BULLET_POINTS = 3;
+const BULLET_SIZE = 8; // Smaller bullets
+
+interface Trail {
+  id: number;
+  x: number;
+  y: number;
+  opacity: number;
+  color: string;
+}
+
+const getPlayerTransform = (dx: number, dy: number, isBoost: boolean) => {
+  if (!dx && !dy) return 0;
+  const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+  return angle;
+};
+
+const getPlayerStretch = (dx: number, dy: number, isBoost: boolean) => {
+  if (!dx && !dy) return 1;
+  const stretch = isBoost ? 1.3 : 1.1;
+  return stretch;
 };
 
 const ViewPort = styled.div`
@@ -89,45 +124,115 @@ const MotionTrail = styled.div<{ x: number; y: number; color: string; opacity: n
   filter: blur(1px);
 `;
 
-const getPlayerTransform = (dx: number, dy: number, isBoost: boolean) => {
-  if (!dx && !dy) return 0;
-  const angle = Math.atan2(dy, dx) * (180 / Math.PI);
-  return angle;
-};
+const BulletElement = styled.div<{ x: number; y: number }>`
+  position: absolute;
+  left: ${props => props.x}px;
+  top: ${props => props.y}px;
+  width: ${BULLET_SIZE}px;
+  height: ${BULLET_SIZE}px;
+  background: #ff4444;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+`;
 
-const getPlayerStretch = (dx: number, dy: number, isBoost: boolean) => {
-  if (!dx && !dy) return 1;
-  const stretch = isBoost ? 1.3 : 1.1;
-  return stretch;
-};
+const ButtonContainer = styled.div`
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  gap: 40px;
+  z-index: 1000;
+`;
 
-interface PlayerSquareProps {
-  color: string;
-  isMoving: boolean;
-  moveDirection: { x: number; y: number };
-  isBoost: boolean;
-  isCurrentPlayer?: boolean;
-}
+const ShootButton = styled.button`
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background: #ff4444;
+  color: white;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  touch-action: manipulation;
+  
+  &:active {
+    transform: scale(0.95);
+  }
+`;
 
-const PlayerSquare = styled.div<PlayerSquareProps>`
+const BoostButton = styled.button<{ isBoost: boolean }>`
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background-color: ${props => props.isBoost ? 'rgba(255, 99, 71, 0.8)' : 'rgba(0, 0, 0, 0.6)'};
+  border: 2px solid ${props => props.isBoost ? '#ff6347' : '#ffffff'};
+  color: white;
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+  touch-action: manipulation;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  
+  &:active {
+    transform: scale(0.95);
+  }
+`;
+
+const HealthBar = styled.div<{ health: number }>`
+  position: absolute;
+  top: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 40px;
+  height: 4px;
+  background: #444;
+  border-radius: 2px;
+  overflow: hidden;
+
+  &:after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: ${props => props.health}%;
+    height: 100%;
+    background: ${props => props.health > 50 ? '#4CAF50' : props.health > 20 ? '#FFA000' : '#f44336'};
+  }
+`;
+
+const Gun = styled.div<{ rotation: number }>`
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 20px;
+  height: 6px;
+  background: #666;
+  border-radius: 3px;
+  transform-origin: left center;
+  transform: translateY(-50%) rotate(${props => props.rotation}deg);
+`;
+
+const PlayerSquare = styled.div<{ x: number; y: number; color: string; transform: number; scale: number; opacity: number }>`
   position: absolute;
   width: ${GRID_SIZE}px;
   height: ${GRID_SIZE}px;
   background-color: ${props => props.color};
-  border-radius: 8px;
-  border: 2px solid rgba(0, 0, 0, 0.3);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: bold;
+  transition: all 0.1s linear;
+  transform: translate(${props => -GRID_SIZE/2}px, ${props => -GRID_SIZE/2}px) 
+             rotate(${props => props.transform}deg) 
+             scale(${props => props.scale});
+  left: ${props => props.x}px;
+  top: ${props => props.y}px;
+  opacity: ${props => props.opacity};
+  z-index: 10;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-  z-index: ${props => props.isCurrentPlayer ? 2 : 1};
-  transform-origin: center;
-  transition: transform 0.1s linear;
-  ${props => props.isMoving ? `
-    transform: rotate(${getPlayerTransform(props.moveDirection.x, props.moveDirection.y, props.isBoost)}deg) 
-              scaleX(${getPlayerStretch(props.moveDirection.x, props.moveDirection.y, props.isBoost)}) 
-              scaleY(${1/getPlayerStretch(props.moveDirection.x, props.moveDirection.y, props.isBoost)});
-    ${props.isBoost ? `
-      filter: blur(2px);
-    ` : ''}
-  ` : 'transform: rotate(0deg) scale(1);'}
 `;
 
 const PlayerName = styled.div<{ isCurrentPlayer: boolean }>`
@@ -135,38 +240,30 @@ const PlayerName = styled.div<{ isCurrentPlayer: boolean }>`
   top: -25px;
   left: 50%;
   transform: translateX(-50%);
-  color: ${props => props.isCurrentPlayer ? '#FFD700' : 'white'};
+  color: ${props => props.isCurrentPlayer ? '#000000' : '#333333'};
   font-weight: ${props => props.isCurrentPlayer ? 'bold' : 'normal'};
   font-size: 14px;
-  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.7);
+  text-shadow: 0 0 4px rgba(255, 255, 255, 0.8);
   white-space: nowrap;
   padding: 2px 6px;
   border-radius: 10px;
-  background: ${props => props.isCurrentPlayer ? 'rgba(0, 0, 0, 0.7)' : 'rgba(0, 0, 0, 0.5)'};
-  z-index: 1;
+  background: rgba(255, 255, 255, 0.8);
+  z-index: 11;
 `;
 
-const PlayerScore = styled.div<{ isCurrentPlayer?: boolean }>`
-  position: absolute;
-  bottom: -20px;
-  left: 50%;
-  transform: translateX(-50%);
-  background-color: rgba(0, 0, 0, 0.6);
-  color: ${props => props.isCurrentPlayer ? '#FFD700' : '#4CAF50'};
-  padding: 2px 8px;
-  border-radius: 8px;
-  font-size: 10px;
-  white-space: nowrap;
-  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
-  z-index: 2;
-`;
-
-const Trail = styled.div<{ opacity: number }>`
+const Trail = styled.div<{ x: number; y: number; opacity: number; color: string }>`
   position: absolute;
   width: ${GRID_SIZE}px;
   height: ${GRID_SIZE}px;
-  background-color: rgba(255, 255, 255, ${props => props.opacity});
-  transition: opacity 0.15s linear;
+  background-color: ${props => props.color};
+  opacity: ${props => props.opacity * 0.5}; 
+  border-radius: 50%;
+  transform: translate(${-GRID_SIZE/2}px, ${-GRID_SIZE/2}px);
+  left: ${props => props.x}px;
+  top: ${props => props.y}px;
+  pointer-events: none;
+  z-index: 5; 
+  filter: blur(2px); 
 `;
 
 const ItemSquare = styled.div<{ x: number; y: number; type: 'coin' | 'star' | 'health' }>`
@@ -227,24 +324,6 @@ const PlayerInfo = styled.div`
   z-index: 1000;
 `;
 
-const HealthBar = styled.div<{ health: number }>`
-  width: 100px;
-  height: 10px;
-  background-color: #333;
-  border-radius: 5px;
-  overflow: hidden;
-  margin-top: 5px;
-
-  &::after {
-    content: '';
-    display: block;
-    width: ${props => props.health}%;
-    height: 100%;
-    background-color: ${props => props.health > 50 ? '#4CAF50' : props.health > 25 ? '#FFC107' : '#F44336'};
-    transition: all 0.3s ease;
-  }
-`;
-
 const XPBar = styled.div<{ progress: number }>`
   width: 100px;
   height: 5px;
@@ -265,75 +344,28 @@ const XPBar = styled.div<{ progress: number }>`
 
 const JoystickContainer = styled.div`
   position: fixed;
-  bottom: 50px;
-  left: 50px;
-  z-index: 1000;
-`;
-
-const MapOverlay = styled.div`
-  position: fixed;
-  top: 10px;
-  right: 10px;
-  background-color: rgba(255, 255, 255, 0.8);
-  padding: 10px;
-  border-radius: 5px;
-  font-size: 12px;
-  z-index: 1000;
-`;
-
-const BoostButton = styled.button<{ isBoost: boolean }>`
-  position: fixed;
-  bottom: 120px;
-  right: 40px;
-  width: 60px;
-  height: 60px;
+  bottom: 20px;
+  left: 20px;
+  width: ${JOYSTICK_SIZE}px;
+  height: ${JOYSTICK_SIZE}px;
+  background: rgba(255, 255, 255, 0.2);
+  border: 2px solid rgba(255, 255, 255, 0.3);
   border-radius: 50%;
-  background-color: ${props => props.isBoost ? 'rgba(255, 99, 71, 0.8)' : 'rgba(0, 0, 0, 0.6)'};
-  border: 2px solid ${props => props.isBoost ? '#ff6347' : '#ffffff'};
-  color: white;
-  font-size: 14px;
-  font-weight: bold;
-  cursor: pointer;
+  touch-action: none;
   z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s ease;
-  touch-action: manipulation;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-  
-  &:active {
-    transform: scale(0.95);
-  }
-
-  &::before {
-    content: '';
-    position: absolute;
-    width: 100%;
-    height: 100%;
-    border-radius: 50%;
-    background-color: ${props => props.isBoost ? 'rgba(255, 99, 71, 0.3)' : 'transparent'};
-    animation: ${props => props.isBoost ? 'pulse 1s infinite' : 'none'};
-  }
-
-  @keyframes pulse {
-    0% {
-      transform: scale(1);
-      opacity: 0.8;
-    }
-    50% {
-      transform: scale(1.2);
-      opacity: 0.4;
-    }
-    100% {
-      transform: scale(1);
-      opacity: 0.8;
-    }
-  }
 `;
 
-interface GameMapProps {
-}
+const JoystickKnob = styled.div<{ x: number; y: number }>`
+  position: absolute;
+  width: ${JOYSTICK_SIZE * 0.4}px;
+  height: ${JOYSTICK_SIZE * 0.4}px;
+  background: rgba(255, 255, 255, 0.8);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  left: ${props => props.x}px;
+  top: ${props => props.y}px;
+  touch-action: none;
+`;
 
 const Dialog = styled.div`
   position: absolute;
@@ -479,7 +511,7 @@ const GameMap: React.FC = () => {
   const [moveDirection, setMoveDirection] = useState({ x: 0, y: 0 });
   const [boostLevel, setBoostLevel] = useState(BASE_BOOST_MULTIPLIER);
   const [collectedItems, setCollectedItems] = useState<Set<string>>(new Set());
-  const [trails, setTrails] = useState<Array<{x: number; y: number; opacity: number; id: number}>>([]);
+  const [trails, setTrails] = useState<Trail[]>([]);
   const lastTrailTime = useRef(0);
   const TRAIL_LIFETIME = 150; // Trail lifetime in milliseconds
   const TRAIL_INTERVAL = 30; // Create a trail every 30ms
@@ -490,6 +522,12 @@ const GameMap: React.FC = () => {
   const collectItemSoundRef = useRef<HTMLAudioElement | null>(null);
   const { items, collectItem } = useItems();
   const { zones, isInDangerZone } = useDangerZones();
+  const joystickRef = useRef<HTMLDivElement>(null);
+  const [joystickPos, setJoystickPos] = useState({ x: JOYSTICK_SIZE / 2, y: JOYSTICK_SIZE / 2 });
+
+  const [bullets, setBullets] = useState<Bullet[]>([]);
+  const [lastShootTime, setLastShootTime] = useState(0);
+  const SHOOT_COOLDOWN = 200; // Cooldown between shots in milliseconds
 
   const [showStartDialog, setShowStartDialog] = useState(true);
   const [showEndDialog, setShowEndDialog] = useState(false);
@@ -594,6 +632,9 @@ const GameMap: React.FC = () => {
         if (KEYS.LEFT.includes(e.key)) newKeys.add('LEFT');
         if (KEYS.RIGHT.includes(e.key)) newKeys.add('RIGHT');
         if (KEYS.BOOST.includes(e.key)) setIsBoost(true);
+        if (e.key.toLowerCase() === 'b') {
+          shoot();
+        }
         return newKeys;
       });
     };
@@ -617,7 +658,7 @@ const GameMap: React.FC = () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, []);
+  }, [currentPlayer, players, lastShootTime]);
 
   useEffect(() => {
     if (enterGameSoundRef.current) {
@@ -643,17 +684,20 @@ const GameMap: React.FC = () => {
     }
   }, [collectedItems]);
 
-  const updateTrails = (currentPlayer: PlayerType, force: number = 1) => {
+  const createTrail = (currentPlayer: PlayerType) => {
     const currentTime = Date.now();
-    if (currentTime - lastTrailTime.current > TRAIL_INTERVAL && isMoving) {
+    
+    if (currentTime - lastTrailTime.current >= TRAIL_INTERVAL) {
       lastTrailTime.current = currentTime;
+      
       setTrails(prevTrails => [
         ...prevTrails.slice(-10), // Keep a maximum of 10 trails
         {
+          id: currentTime,
           x: currentPlayer.x,
           y: currentPlayer.y,
           opacity: isBoost ? 0.4 : 0.2,
-          id: currentTime
+          color: currentPlayer.color
         }
       ]);
 
@@ -667,7 +711,7 @@ const GameMap: React.FC = () => {
   // Update trails during movement
   useEffect(() => {
     if (!currentPlayer || !players[currentPlayer] || !isMoving) return;
-    updateTrails(players[currentPlayer]);
+    createTrail(players[currentPlayer]);
   }, [players, currentPlayer, isMoving, isBoost]);
 
   // Item collection
@@ -705,6 +749,101 @@ const GameMap: React.FC = () => {
     }
   }, [players, currentPlayer]);
 
+  const shoot = () => {
+    if (!currentPlayer || !players[currentPlayer]) return;
+    
+    const now = Date.now();
+    if (now - lastShootTime < SHOOT_COOLDOWN) return;
+    
+    const player = players[currentPlayer];
+    
+    // Check if player has enough score to shoot
+    if ((player.score || 0) < BULLET_COST) return;
+    
+    setLastShootTime(now);
+    
+    const bulletId = `bullet-${currentPlayer}-${now}`;
+    const direction = player.direction || { x: 1, y: 0 };
+    
+    // Normalize direction
+    const magnitude = Math.sqrt(direction.x * direction.x + direction.y * direction.y);
+    const normalizedDirection = {
+      x: direction.x / (magnitude || 1),
+      y: direction.y / (magnitude || 1)
+    };
+
+    const newBullet: Bullet = {
+      id: bulletId,
+      x: player.x,
+      y: player.y,
+      direction: normalizedDirection,
+      playerId: currentPlayer
+    };
+
+    // Deduct score for shooting
+    const playerRef = ref(db, `players/${currentPlayer}`);
+    update(playerRef, {
+      score: (player.score || 0) - BULLET_COST
+    });
+
+    setBullets(prev => [...prev, newBullet]);
+  };
+
+  useEffect(() => {
+    const bulletInterval = setInterval(() => {
+      setBullets(prevBullets => {
+        let updatedBullets = prevBullets.map(bullet => ({
+          ...bullet,
+          x: bullet.x + bullet.direction.x * BULLET_SPEED,
+          y: bullet.y + bullet.direction.y * BULLET_SPEED
+        }));
+
+        // Check for collisions with players
+        updatedBullets = updatedBullets.filter(bullet => {
+          let bulletShouldExist = true;
+
+          Object.entries(players).forEach(([playerId, player]) => {
+            if (!player || playerId === bullet.playerId) return;
+
+            const dx = bullet.x - player.x;
+            const dy = bullet.y - player.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+
+            if (distance < GRID_SIZE / 2) {
+              // Hit detected
+              const playerRef = ref(db, `players/${playerId}`);
+              const shooterRef = ref(db, `players/${bullet.playerId}`);
+
+              // Update player health
+              update(playerRef, {
+                health: (player.health || 100) - BULLET_DAMAGE
+              });
+
+              // Update shooter's score
+              if (players[bullet.playerId]) {
+                update(shooterRef, {
+                  score: (players[bullet.playerId].score || 0) + BULLET_POINTS
+                });
+              }
+
+              bulletShouldExist = false;
+            }
+          });
+
+          return bulletShouldExist;
+        });
+
+        // Remove bullets that are out of bounds
+        return updatedBullets.filter(bullet => 
+          bullet.x >= 0 && bullet.x <= MAP_WIDTH &&
+          bullet.y >= 0 && bullet.y <= MAP_HEIGHT
+        );
+      });
+    }, 16);
+
+    return () => clearInterval(bulletInterval);
+  }, [players]);
+
   const handleStartGame = () => {
     setShowStartDialog(false);
   };
@@ -712,6 +851,85 @@ const GameMap: React.FC = () => {
   const handleEndGame = () => {
     // Logic to reset or end the game
   };
+
+  const handleJoystickStart = (e: React.TouchEvent | React.MouseEvent) => {
+    const touch = 'touches' in e ? e.touches[0] : e;
+    const rect = joystickRef.current?.getBoundingClientRect();
+    if (rect) {
+      const x = touch.clientX - rect.left;
+      const y = touch.clientY - rect.top;
+      updateJoystickPosition(x, y);
+    }
+  };
+
+  const handleJoystickMove = (e: React.TouchEvent | React.MouseEvent) => {
+    const touch = 'touches' in e ? e.touches[0] : e;
+    const rect = joystickRef.current?.getBoundingClientRect();
+    if (rect && ('touches' in e ? e.touches.length > 0 : true)) {
+      const x = touch.clientX - rect.left;
+      const y = touch.clientY - rect.top;
+      updateJoystickPosition(x, y);
+    }
+  };
+
+  const handleJoystickEnd = () => {
+    setJoystickPos({ x: JOYSTICK_SIZE / 2, y: JOYSTICK_SIZE / 2 });
+    setMoveDirection({ x: 0, y: 0 });
+  };
+
+  const updateJoystickPosition = (x: number, y: number) => {
+    const centerX = JOYSTICK_SIZE / 2;
+    const centerY = JOYSTICK_SIZE / 2;
+    const dx = x - centerX;
+    const dy = y - centerY;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    const maxDistance = JOYSTICK_SIZE / 2;
+    
+    let newX = x;
+    let newY = y;
+    
+    if (distance > maxDistance) {
+      const angle = Math.atan2(dy, dx);
+      newX = centerX + Math.cos(angle) * maxDistance;
+      newY = centerY + Math.sin(angle) * maxDistance;
+    }
+    
+    setJoystickPos({ x: newX, y: newY });
+    setMoveDirection({
+      x: (newX - centerX) / maxDistance,
+      y: (newY - centerY) / maxDistance
+    });
+  };
+
+  useEffect(() => {
+    if (currentPlayer && players[currentPlayer]) {
+      const interval = setInterval(() => {
+        const dx = moveDirection.x;
+        const dy = moveDirection.y;
+        
+        if (dx !== 0 || dy !== 0) {
+          const speed = isBoost ? PLAYER_SPEED * 2 : PLAYER_SPEED;
+          const newX = players[currentPlayer].x + dx * speed;
+          const newY = players[currentPlayer].y + dy * speed;
+          
+          // Update player position
+          const playerRef = ref(db, `players/${currentPlayer}`);
+          update(playerRef, {
+            x: Math.max(0, Math.min(MAP_WIDTH, newX)),
+            y: Math.max(0, Math.min(MAP_HEIGHT, newY)),
+            direction: { x: dx, y: dy }
+          });
+          
+          // Add trail
+          if (isBoost) {
+            createTrail(players[currentPlayer]);
+          }
+        }
+      }, 16);
+      
+      return () => clearInterval(interval);
+    }
+  }, [currentPlayer, players, moveDirection, isBoost]);
 
   if (showWelcome || !currentPlayer) {
     return <Auth onLogin={handleNameSubmit} />;
@@ -750,6 +968,27 @@ const GameMap: React.FC = () => {
       <MapContainer x={cameraPosition.x} y={cameraPosition.y}>
         <MapBackground />
         <GridOverlay />
+        
+        {/* Trails */}
+        {trails.map((trail) => (
+          <Trail 
+            key={trail.id}
+            x={trail.x}
+            y={trail.y}
+            opacity={trail.opacity}
+            color={trail.color}
+          />
+        ))}
+
+        {/* Bullets */}
+        {bullets.map(bullet => (
+          <BulletElement
+            key={bullet.id}
+            x={bullet.x}
+            y={bullet.y}
+          />
+        ))}
+
         {/* Items */}
         {Object.values(items).map((item) => (
           <ItemSquare
@@ -764,99 +1003,59 @@ const GameMap: React.FC = () => {
         {Object.entries(players).map(([id, player]) => (
           <PlayerSquare
             key={id}
-            style={{
-              left: player.x,
-              top: player.y,
-            }}
-            color={player.color || '#ffffff'}
-            isMoving={id === currentPlayer ? isMoving : false}
-            moveDirection={id === currentPlayer ? moveDirection : player.direction}
-            isBoost={id === currentPlayer ? isBoost : false}
-            isCurrentPlayer={id === currentPlayer}
+            x={player.x}
+            y={player.y}
+            color={player.color}
+            transform={getPlayerTransform(
+              player.direction?.x || 0,
+              player.direction?.y || 0,
+              isBoost && id === currentPlayer
+            )}
+            scale={isBoost && id === currentPlayer ? 0.8 : 1}
+            opacity={1}
           >
-            <PlayerName isCurrentPlayer={id === currentPlayer}>
-              {player.name}
-            </PlayerName>
-            <PlayerScore isCurrentPlayer={id === currentPlayer}>
-              Score: {player.score || 0}
-            </PlayerScore>
+            <HealthBar health={player.health || 100} />
+            <Gun rotation={getPlayerTransform(
+              player.direction?.x || 0,
+              player.direction?.y || 0,
+              false
+            )} />
+            <PlayerName isCurrentPlayer={id === currentPlayer}>{player.name}</PlayerName>
           </PlayerSquare>
-        ))}
-
-        {/* Trails */}
-        {trails.map(trail => (
-          <MotionTrail
-            key={trail.id}
-            x={trail.x}
-            y={trail.y}
-            color={players[currentPlayer]?.color || '#fff'}
-            opacity={trail.opacity}
-            scale={0.8}
-          />
         ))}
 
         <Leaderboard players={players} currentPlayerId={currentPlayer} />
       </MapContainer>
 
       {/* Controls */}
-      <JoystickContainer>
-        <ReactNipple
-          options={{
-            mode: 'static',
-            position: { top: '50%', left: '50%' },
-            color: 'white',
-            size: 150,
-          }}
-          style={{
-            width: 150,
-            height: 150,
-            position: 'relative',
-            background: 'rgba(0, 0, 0, 0.1)',
-            borderRadius: '50%',
-          }}
-          onMove={(evt, data) => {
-            if (!currentPlayer || !players[currentPlayer]) return;
+      <ButtonContainer>
+        <BoostButton
+          isBoost={isBoost}
+          onMouseDown={() => setIsBoost(true)}
+          onTouchStart={() => setIsBoost(true)}
+          onMouseUp={() => setIsBoost(false)}
+          onTouchEnd={() => setIsBoost(false)}
+        >
+          BOOST
+        </BoostButton>
+        <ShootButton onClick={shoot}>
+          B
+        </ShootButton>
+      </ButtonContainer>
 
-            const player = players[currentPlayer];
-            const baseSpeed = (player.speed || PLAYER_SPEED) * (GRID_SIZE / 10);
-            const currentSpeed = baseSpeed * (isBoost ? boostLevel : 1);
-            const force = Math.min(1, data.force);
-
-            const angle = data.angle.radian;
-            const deltaX = Math.cos(angle) * force * currentSpeed;
-            const deltaY = -Math.sin(angle) * force * currentSpeed;
-
-            if (deltaX !== 0 || deltaY !== 0) {
-              setIsMoving(true);
-              setMoveDirection({ x: deltaX, y: deltaY });
-
-              const newX = Math.max(0, Math.min(MAP_WIDTH - GRID_SIZE, player.x + deltaX));
-              const newY = Math.max(0, Math.min(MAP_HEIGHT - GRID_SIZE, player.y + deltaY));
-
-              const playerRef = ref(db, `players/${currentPlayer}`);
-              update(playerRef, {
-                x: newX,
-                y: newY,
-                direction: { x: deltaX, y: deltaY }
-              });
-            }
-          }}
-          onEnd={() => {
-            setIsMoving(false);
-            setMoveDirection({ x: 0, y: 0 });
-          }}
-        />
-      </JoystickContainer>
-
-      <BoostButton
-        isBoost={isBoost}
-        onTouchStart={() => setIsBoost(true)}
-        onTouchEnd={() => setIsBoost(false)}
-        onMouseDown={() => setIsBoost(true)}
-        onMouseUp={() => setIsBoost(false)}
+      {/* Joystick */}
+      <JoystickContainer
+        ref={joystickRef}
+        onMouseDown={handleJoystickStart}
+        onMouseMove={handleJoystickMove}
+        onMouseUp={handleJoystickEnd}
+        onMouseLeave={handleJoystickEnd}
+        onTouchStart={handleJoystickStart}
+        onTouchMove={handleJoystickMove}
+        onTouchEnd={handleJoystickEnd}
       >
-        BOOST
-      </BoostButton>
+        <JoystickKnob x={joystickPos.x} y={joystickPos.y} />
+      </JoystickContainer>
 
       {/* Player Stats */}
       <PlayerInfo>
